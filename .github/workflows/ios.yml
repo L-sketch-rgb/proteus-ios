@@ -230,3 +230,14 @@ jobs:
           name: ios-screens
           path: ios/screens
           if-no-files-found: error
+
+      # D55: the wave is only visible in the 10 pt gutter and behind the chrome,
+      # so the border of every screenshot must not be one flat colour. This is
+      # the check that was missing for three builds of ditherless screenshots.
+      - name: Check the wave is on screen
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          for screen in chats settings terminal; do
+            xcrun swift dither-check.swift "screens/$screen.png"
+          done
