@@ -1,0 +1,118 @@
+import Foundation
+import Combine
+import ProteusKit
+
+/// One open chat: transcript rows, live task state and pending permission
+/// requests. Instances are cached by AppModel so navigating away and back
+/// does not rebuild the transcript (the hub only replays events after the
+/// last seq held by HubClient).
+final class ChatSessionModel: ObservableObject, Identifiable {
+    let id: String
+
+    let chat = ChatStore()
+    let tasks = TaskStore()
+
+    @Published private(set) var rows: [ChatRow] = []
+    @Published private(set) var sortedTasks: [TaskData] = []
+    @Published private(set) var runningTasks: Int = 0
+    @Published private(set) var permissions: [PermissionRequest] = []
+    @Published private(set) var session: SessionInfo?
+    /// Bumped after every transcript mutation, so the view can pin to bottom
+    /// while streaming (row count alone does not change on deltas).
+    @Published private(set) var contentVersion: Int = 0
+
+    /// v10 §12: remembered scroll state, per chat, in memory.
+    var scrollAnchorId: String?
+    var scrollAtBottom = true
+    var scrollLastSeenCount = 0
+
+    init(id: String) {
+        self.id = id
+        chat.reset(sessionId: id)
+        chat.onChange = { [weak self] in self?.refreshRows() }
+        chat.onTask = { [weak self] task in self?.tasks.replace(task) }
+        tasks.onChange = { [weak self] in self?.refreshTasks() }
+    }
+
+    var title: String {
+        let title = session?.title ?? ""
+        return title.isEmpty ? "Chat" : title
+    }
+
+    var isRunning: Bool {
+        guard let status = session?.statusKind else { return false }
+        return status == .running || status == .waiting
+    }
+
+    var taskSummary: String { tasks.summaryLine() }
+
+    /// Canonical event rows, group children counted once (v10 §12 pill).
+    var entryCount: Int { chat.entryCount }
+
+    /// All display rows, including children of a collapsed tool group.
+    var allRows: [ChatRow] { chat.rows }
+
+    /// v10 §2: expand/collapse one tool group.
+    func toggleGroup(_ groupId: String) {
+        chat.toggleGroup(groupId)
+    }
+
+    /// v10 §2: an agent tap scrolls to its card; open its group first.
+    func expandGroup(containingRowId rowId: String) {
+        guard let row = chat.rows.first(where: { $0.id == rowId }),
+              !row.groupId.isEmpty,
+              !row.groupExpanded else { return }
+        chat.expandGroup(row.groupId)
+    }
+
+    /// v10 §11: the original message keeps its place, marked "edited ↓".
+    func markEdited(rowId: String) {
+        chat.markEdited(id: rowId)
+    }
+
+    /// v10 §13: the transcript row a pin points at, for scrolling.
+    func row(for pin: Pin) -> ChatRow? {
+        chat.row(matching: pin)
+    }
+
+    func updateSession(_ session: SessionInfo) {
+        self.session = session
+    }
+
+    func apply(_ event: HubEvent) {
+        chat.apply(event)
+    }
+
+    func applyHistory(_ frame: HistoryFrame) {
+        tasks.reset()
+        permissions = []
+        chat.applyHistory(frame.items, lastSeq: frame.lastSeq)
+        refreshTasks()
+    }
+
+    func addPermission(_ request: PermissionRequest) {
+        guard !permissions.contains(where: { $0.reqId == request.reqId }) else { return }
+        permissions.append(request)
+    }
+
+    func removePermission(reqId: String) {
+        permissions.removeAll { $0.reqId == reqId }
+    }
+
+    func reset() {
+        tasks.reset()
+        permissions = []
+        chat.reset(sessionId: id)
+        refreshTasks()
+    }
+
+    private func refreshRows() {
+        rows = chat.visibleRows
+        contentVersion += 1
+    }
+
+    private func refreshTasks() {
+        sortedTasks = tasks.sorted
+        runningTasks = tasks.runningCount
+    }
+}

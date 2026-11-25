@@ -1,0 +1,217 @@
+name: iOS
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - "protocol/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+    inputs:
+      screens_only:
+        description: "Skip the device archive and IPA (UI iteration only)"
+        type: boolean
+        default: true
+
+# A superseded push cancels the run it replaced instead of leaving it to burn a
+# macOS runner for ten minutes.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scoped to what this job ships: the iOS app and the protocol it speaks.
+      # The scan's default paths include hub/ and linux/, which are not built
+      # here; their hits are tracked separately (docs/REQUESTS.md).
+      - name: Owner-data scan (generic patterns only)
+        run: scripts/owner-scan.sh --generic-only ios protocol
+
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          XCODE="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            echo "xcodegen already on the image: $(xcodegen --version)"
+            exit 0
+          fi
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen
+
+      # SwiftPM checkouts (SwiftTerm is compiled from source) and ProteusKit's
+      # own build products.
+      - name: Cache SwiftPM and ProteusKit
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/ProteusKit/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('ios/ProteusKit/Package.swift', 'ios/ProteusKit/Package.resolved', 'ios/ProteusKit/Sources/**', 'ios/ProteusKit/Tests/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Test ProteusKit
+        working-directory: ios/ProteusKit
+        run: swift test
+
+      # DerivedData for both the device archive and the simulator build, so a
+      # run only recompiles what changed instead of everything.
+      - name: Restore DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/build
+            ios/build-sim
+          key: derived-${{ runner.os }}-${{ hashFiles('ios/Proteus.xcodeproj/**', 'ios/Proteus/**', 'ios/ProteusKit/Package.swift', 'ios/ProteusKit/Sources/**') }}
+          restore-keys: |
+            derived-${{ runner.os }}-
+
+      - name: Archive unsigned
+        if: github.event.inputs.screens_only != 'true'
+        working-directory: ios
+        run: |
+          xcodebuild -scheme Proteus -skipPackagePluginValidation -skipMacroValidation \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            -archivePath build/Proteus.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Package IPA
+        if: github.event.inputs.screens_only != 'true'
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Proteus.xcarchive/Products/Applications/Proteus.app Payload/
+          zip -qry Proteus.ipa Payload
+          ls -lh Proteus.ipa
+
+      - name: Upload IPA
+        if: github.event.inputs.screens_only != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Proteus-ipa
+          path: ios/Proteus.ipa
+
+      - name: Pick a simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          UDID="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [ -z "$UDID" ]; then
+            echo "No available iPhone simulator runtime" >&2
+            xcrun simctl list runtimes >&2
+            exit 1
+          fi
+          echo "Using simulator $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      # Returns immediately: CoreSimulator boots the device in its own daemon,
+      # so this overlaps with the build instead of adding its ~40 s to the run.
+      - name: Start booting simulator
+        env:
+          DEVICE: ${{ steps.sim.outputs.udid }}
+        run: xcrun simctl boot "$DEVICE" || true
+
+      # A concrete destination, not `generic/platform=iOS Simulator` + `-sdk`:
+      # the generic form leaves EFFECTIVE_PLATFORM_NAME unresolved, so
+      # SwiftTerm's build-info script phase writes SwiftTermBuildInfoGenerator
+      # to Products/Release while the build looks for it there and fails (65).
+      # Debug, not Release: Release's whole-module optimisation took the sim
+      # build from ~5 min to 9:06 (and once failed on a type-checker timeout).
+      # Rendering is identical for demo data; the IPA is the Release build.
+      - name: Build for simulator
+        working-directory: ios
+        env:
+          DEVICE: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcodebuild -project Proteus.xcodeproj -scheme Proteus \
+            -skipPackagePluginValidation -skipMacroValidation \
+            -configuration Debug \
+            -derivedDataPath "$PWD/build-sim" \
+            -destination "id=$DEVICE" \
+            build \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            ONLY_ACTIVE_ARCH=YES
+          # Not `-showBuildSettings | awk ... exit`: awk closing the pipe early
+          # sends xcodebuild SIGPIPE, and pipefail turns that into a red step.
+          APP_PATH="$(find "$PWD/build-sim/Build/Products" -maxdepth 2 -type d -name 'Proteus.app' -print -quit)"
+          test -n "$APP_PATH"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          xcrun simctl bootstatus "$DEVICE" -b
+
+      - name: Capture demo screenshots
+        working-directory: ios
+        env:
+          DEVICE: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          APP="$APP_PATH"
+          test -d "$APP"
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          echo "Installing $BUNDLE_ID from $APP"
+          xcrun simctl uninstall "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+          xcrun simctl install "$DEVICE" "$APP"
+          xcrun simctl status_bar "$DEVICE" override --time '9:41' \
+            --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+
+          mkdir -p screens
+          capture() {
+            local screen="$1"
+            xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+            if [ "$screen" = "chats" ]; then
+              xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo
+            else
+              xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo -ProteusDemoScreen="$screen"
+            fi
+            # Cold start of a Release build; 5 s caught the launch screen once.
+            sleep 8
+            xcrun simctl io "$DEVICE" screenshot "screens/$screen.png"
+          }
+
+          for screen in chats agents project terminal settings; do
+            capture "$screen"
+          done
+
+          # The real first run: no demo flags, no workstation. This is what a
+          # sideloaded install shows, and the only smoke test of the code path
+          # that does not go through -ProteusDemo.
+          xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+          xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+          sleep 8
+          xcrun simctl io "$DEVICE" screenshot "screens/live.png"
+          # A process that died between launch and the screenshot means a crash
+          # on the real path; fail loudly instead of shipping the IPA quietly.
+          if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
+            echo "$BUNDLE_ID is not running after a plain launch" >&2
+            ls -l ~/Library/Logs/DiagnosticReports 2>/dev/null || true
+            exit 1
+          fi
+          ls -lh screens
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-screens
+          path: ios/screens
+          if-no-files-found: error

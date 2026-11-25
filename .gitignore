@@ -1,0 +1,19 @@
+.DS_Store
+*.log
+.env
+
+# Build products
+build/
+build-sim/
+ios/build/
+ios/build-sim/
+ios/Payload/
+ios/Proteus.ipa
+ios/Proteus.xcodeproj/
+ios/.build/
+ios/.swiftpm/
+ios/ProteusKit/.build/
+ios/ProteusKit/.swiftpm/
+
+# Screenshots captured by CI
+ios/screens/

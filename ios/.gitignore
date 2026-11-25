@@ -1,0 +1,7 @@
+Proteus.xcodeproj/
+build/
+Payload/
+Proteus.ipa
+.build/
+.swiftpm/
+.DS_Store
