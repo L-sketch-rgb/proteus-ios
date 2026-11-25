@@ -546,6 +546,11 @@ final class AppModel: ObservableObject {
             finishNewChat(frame)
 
         case .err(let frame):
+            // A rejected *new* chat has no chat screen of its own, so its error
+            // must not be swallowed the way a live chat's model swap is: the
+            // screen that asked for it is still up and waiting (D57).
+            let newChatRid = pendingNew?.rid
+            let rejectedNewChat = newChatRid != nil && (frame.rid == nil || frame.rid == newChatRid)
             if let pending = pendingNew, frame.rid == pending.rid {
                 pendingNew = nil
             }
@@ -555,7 +560,10 @@ final class AppModel: ObservableObject {
                 return
             }
             let message = frame.message ?? "Request failed (\(frame.code))."
-            if frame.code == "model_unavailable" {
+            if rejectedNewChat {
+                pendingNew = nil
+                errorText = Self.newChatError(code: frame.code, message: message)
+            } else if frame.code == "model_unavailable" {
                 modelUnavailableChatId = lastSend?.chatId ?? activeChat?.id
                 errorText = nil
             } else if Self.isRawProtocolError(message) {
@@ -576,6 +584,7 @@ final class AppModel: ObservableObject {
         if let rid = frame.rid, rid != pending.rid { return }
         guard let id = frame.id else { return }
         pendingNew = nil
+        errorText = nil
 
         let trimmedText = pending.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstLine = trimmedText.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? ""
@@ -691,6 +700,21 @@ final class AppModel: ObservableObject {
         let def = projects.first { $0.name == project }
         let id = catalog.newChatModel(project: def)
         return id.isEmpty ? defaultModel : id
+    }
+
+    /// The hub rejects a new chat with a code the user can act on, so say what
+    /// to change instead of echoing the protocol (D57).
+    private static func newChatError(code: String, message: String) -> String {
+        switch code {
+        case "model_unavailable":
+            return "That model isn't available on the hub. Pick another model."
+        case "bad_request" where message.contains("unknown project"):
+            return "The hub doesn't know that project any more. Pick another project."
+        case "bad_request" where message.contains("cwd"):
+            return "That folder doesn't exist on the workstation. Pick another folder."
+        default:
+            return message
+        }
     }
 
     @discardableResult

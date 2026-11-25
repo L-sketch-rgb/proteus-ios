@@ -230,6 +230,9 @@ struct ModelMenuButton: View {
     let title: String
     let menu: ModelMenu
     let selected: String
+    /// v19 §2.4: the new-chat screen wants this as one chip in a row, not a
+    /// full-width menu row.
+    var chip: Bool = false
     let onSelect: (String) -> Void
 
     private func display(_ model: ModelInfo, in section: ModelSection, includeProvider: Bool) -> String {
@@ -268,8 +271,12 @@ struct ModelMenuButton: View {
                 }
             }
         } label: {
-            Text(title)
-                .lineLimit(1)
+            if chip {
+                Chip(title: title, icon: "cpu")
+            } else {
+                Text(title)
+                    .lineLimit(1)
+            }
         }
     }
 

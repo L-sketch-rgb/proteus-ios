@@ -34,7 +34,6 @@ struct ProjectChatsView: View {
     @State private var collapsed: Set<String> = []
     @State private var renameTarget: SessionInfo?
     @State private var deleteTarget: SessionInfo?
-    @State private var showNewChat = false
 
     private var panelShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -106,16 +105,11 @@ struct ProjectChatsView: View {
         .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showNewChat = true
-                } label: {
+                NavigationLink(value: NewChatTarget(project: project?.name ?? "")) {
                     Image(systemName: "square.and.pencil")
                 }
                 .accessibilityLabel("New chat")
             }
-        }
-        .sheet(isPresented: $showNewChat) {
-            NewChatSheet(project: project?.name ?? "")
         }
         .sheet(item: $renameTarget) { session in
             RenameChatSheet(session: session)

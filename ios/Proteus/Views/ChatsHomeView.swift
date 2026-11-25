@@ -16,8 +16,6 @@ struct ChatsHomeView: View {
     @State private var path = NavigationPath()
     @State private var search = ""
     @State private var searchPresented = false
-    @State private var showNewChat = false
-    @State private var newChatProject = ""
     @State private var renameTarget: SessionInfo?
     @State private var deleteTarget: SessionInfo?
     @State private var projectEditorTarget: ProjectEditTarget?
@@ -125,12 +123,15 @@ struct ChatsHomeView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        projectEditorTarget = ProjectEditTarget(project: nil)
+                        path.append(NewChatTarget())
                     } label: {
-                        Image(systemName: "plus")
+                        Image(systemName: "square.and.pencil")
                     }
-                    .accessibilityLabel("New project")
+                    .accessibilityLabel("New chat")
                 }
+            }
+            .navigationDestination(for: NewChatTarget.self) { target in
+                NewChatView(target: target)
             }
             .navigationDestination(for: String.self) { id in
                 ChatView(chat: app.chatModel(for: id))
@@ -141,9 +142,6 @@ struct ChatsHomeView: View {
             .navigationDestination(for: ChatScope.self) { scope in
                 ProjectChatsView(scope: scope)
             }
-        }
-        .sheet(isPresented: $showNewChat) {
-            NewChatSheet(project: newChatProject)
         }
         .sheet(isPresented: $showWorkstations) {
             NavigationStack {
@@ -242,16 +240,42 @@ struct ChatsHomeView: View {
             .padding(.horizontal, 6)
 
         if otherProjects.isEmpty {
-            Text("No projects yet. ＋ makes one.")
+            Text("No projects yet.")
                 .font(.system(size: 13))
                 .foregroundStyle(theme.textMeta)
                 .padding(.horizontal, 6)
-                .padding(.bottom, 8)
+                .padding(.bottom, 2)
         } else {
             projectGrid(otherProjects)
         }
 
+        newProjectTile
         unfiledRow
+    }
+
+    /// `＋` in the nav asks a question now; making a project lives here, in the
+    /// grid of projects (D57).
+    private var newProjectTile: some View {
+        Button {
+            projectEditorTarget = ProjectEditTarget(project: nil)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("New project")
+                    .font(.system(size: 13.5, weight: .medium))
+            }
+            .foregroundStyle(theme.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(theme.fieldFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(theme.rim, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("New project")
     }
 
     private func projectGrid(_ projects: [ProjectDef]) -> some View {
@@ -391,8 +415,7 @@ struct ChatsHomeView: View {
                   systemImage: pinned.contains(project.name) ? "pin.slash" : "pin")
         }
         Button {
-            newChatProject = project.name
-            showNewChat = true
+            path.append(NewChatTarget(project: project.name))
         } label: {
             Label("New chat here", systemImage: "plus.bubble")
         }
@@ -443,8 +466,7 @@ struct ChatsHomeView: View {
                     .font(.subheadline)
                     .foregroundStyle(theme.textSecondary)
                 Button {
-                    newChatProject = ""
-                    showNewChat = true
+                    path.append(NewChatTarget())
                 } label: {
                     Text("New chat")
                 }
@@ -513,6 +535,8 @@ struct ChatsHomeView: View {
             if let first = app.sessions.first {
                 path.append(first.id)
             }
+        case "newchat":
+            path.append(NewChatTarget(project: app.projects.first?.name ?? ""))
         default:
             break
         }
