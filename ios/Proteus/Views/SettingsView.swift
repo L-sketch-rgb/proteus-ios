@@ -2,10 +2,17 @@ import SwiftUI
 import Foundation
 import ProteusKit
 
+/// Settings: a card stack on the panel (docs/design/v19-ios-shell.md §4).
+///
+/// Not a `Form`. On iOS a `Form` paints `systemGroupedBackground` — white on
+/// white in light mode, an opaque sheet in dark — so the v18 tokens never
+/// reached this screen and the wave never showed around it. Cards on the
+/// reading surface do, and the section label lives inside its card.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.proteusTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
 
     /// v18: Settings is a tab on the phone, so there is nothing to dismiss.
     /// It stays `true` when the screen is presented as a sheet.
@@ -16,149 +23,45 @@ struct SettingsView: View {
     @AppStorage("proteus.animatedBackground") private var animatedBackground = true
     @AppStorage("proteus.backgroundIntensity") private var backgroundIntensity = 0.8
     @AppStorage(TextScale.key) private var textScale = TextScale.default
+    @AppStorage("proteus.terminal.fontSize") private var terminalFontSize = 12.0
+
     @State private var slotEditor: CustomSlotTarget?
+
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+    }
+
+    private var currentPalette: Palette {
+        app.resolvedPalette(for: paletteKey).palette
+    }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Workstations") {
-                    NavigationLink {
-                        WorkstationsView()
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(app.activeWorkstation?.name ?? "No workstation")
-                                Text(workstationDetail)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(app.connection.label)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
+            ScrollView {
+                VStack(spacing: 12) {
+                    workstationsCard
+                    notificationsCard
+                    accountsCard
+                    modelCard
+                    appearanceCard
+                    terminalsCard
+                    aboutCard
                 }
-
-                Section("Notifications") {
-                    NavigationLink {
-                        NotificationsView()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Push notifications")
-                            Text(notificationDetail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Section("Accounts & providers") {
-                    NavigationLink {
-                        AccountsProvidersView()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(accountsTitle)
-                            if !app.providers.isEmpty {
-                                Text(app.providers.map { app.prettyProvider($0) }.joined(separator: ", "))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                Section("Default model") {
-                    ModelMenuButton(
-                        title: app.modelLabel(for: app.defaultModel),
-                        menu: app.modelMenu,
-                        selected: app.defaultModel,
-                        onSelect: { app.setDefaultModel($0) }
-                    )
-                }
-
-                Section("Appearance") {
-                    Picker("Theme", selection: $themeRaw) {
-                        ForEach(AppTheme.allCases) { theme in
-                            Text(theme.label).tag(theme.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    paletteGrid
-
-                    customPaletteRow
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Text size")
-                            Spacer()
-                            Text("\(textScale)%")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(
-                            value: Binding(
-                                get: { Double(textScale) },
-                                set: { textScale = Int($0.rounded()) }
-                            ),
-                            in: Double(TextScale.minimum)...Double(TextScale.maximum),
-                            step: 5
-                        )
-                        .accessibilityLabel("Text size")
-                        .accessibilityValue("\(textScale) percent")
-                    }
-
-                    Toggle("Animated background", isOn: $animatedBackground)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Background intensity")
-                            Spacer()
-                            Text("\(Int((backgroundIntensity * 100).rounded()))%")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(value: $backgroundIntensity, in: 0...1, step: 0.05)
-                            .disabled(!animatedBackground)
-                            .accessibilityLabel("Background intensity")
-                    }
-                }
-
-                Section {
-                    Toggle("Show shell greeting", isOn: $app.showShellGreeting)
-                        .onChange(of: app.showShellGreeting) { _, value in
-                            UserDefaults.standard.set(value, forKey: "proteus.terminal.showGreeting")
-                        }
-                } header: {
-                    Text("Terminals")
-                } footer: {
-                    Text("Off hides your shell's startup greeting in new terminals. Terminals already open keep their setting.")
-                }
-
-                Section("Connection") {
-                    LabeledContent("Status") { Text(app.connection.label) }
-                    LabeledContent("Hub") { Text(app.hubVersion ?? "—") }
-                    Button("Reconnect") { app.reconnect() }
-                        .disabled(!app.hasWorkstation)
-                }
-
-                // v19 §0.3: the last card used to sit under the tab bar. The
-                // card stack lands in phase A follow-up; until then this keeps
-                // the bottom of the form reachable.
-                Section {
-                    Color.clear
-                        .frame(height: 56)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                }
+                .padding(.horizontal, 10)
+                .padding(.top, 12)
+                // 76 pt clears the floating tab bar (§0.3, §4).
+                .padding(.bottom, 76)
             }
-            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .background(theme.readingSurface)
+            .clipShape(panelShape)
+            .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .chromeToolbar(theme)
             .toolbar {
                 if showsDoneButton {
                     ToolbarItem(placement: .confirmationAction) {
@@ -172,6 +75,284 @@ struct SettingsView: View {
             CustomColorPickerSheet(initialIndex: target.index, initialSlot: target.slot)
         }
     }
+
+    // MARK: - Cards
+
+    private var workstationsCard: some View {
+        SettingsCard("Workstations") {
+            NavigationLink {
+                WorkstationsView()
+            } label: {
+                RowShell {
+                    HStack(spacing: 10) {
+                        StatusDot(state: app.hasWorkstation ? .working : .idle, size: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(app.activeWorkstation?.name ?? "No workstation")
+                                .foregroundStyle(theme.textPrimary)
+                            Text(workstationDetail)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(theme.textMeta)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Text(app.connection.label)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var notificationsCard: some View {
+        SettingsCard("Notifications") {
+            NavigationLink {
+                NotificationsView()
+            } label: {
+                RowShell {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Push notifications")
+                            .foregroundStyle(theme.textPrimary)
+                        Text(notificationDetail)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(theme.textMeta)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var accountsCard: some View {
+        SettingsCard("Accounts & providers") {
+            NavigationLink {
+                AccountsProvidersView()
+            } label: {
+                RowShell {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(accountsTitle)
+                            .foregroundStyle(theme.textPrimary)
+                        if !app.providers.isEmpty {
+                            Text(app.providers.map { app.prettyProvider($0) }.joined(separator: " · "))
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(theme.textMeta)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var modelCard: some View {
+        SettingsCard("Default model") {
+            RowShell(showsChevron: false) {
+                ModelMenuButton(
+                    title: app.modelLabel(for: app.defaultModel),
+                    menu: app.modelMenu,
+                    selected: app.defaultModel,
+                    onSelect: { app.setDefaultModel($0) }
+                )
+            }
+        }
+    }
+
+    private var appearanceCard: some View {
+        SettingsCard("Appearance") {
+            field {
+                Picker("Theme", selection: $themeRaw) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Text(theme.label).tag(theme.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Hairline().padding(.leading, 16)
+
+            field {
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionLabel(text: "Palette")
+                    paletteGrid
+                }
+            }
+
+            Hairline().padding(.leading, 16)
+
+            field { customPaletteRow }
+
+            Hairline().padding(.leading, 16)
+
+            field {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Background intensity")
+                            .foregroundStyle(theme.textBody)
+                        Spacer(minLength: 8)
+                        Text("\(Int((backgroundIntensity * 100).rounded()))%")
+                            .font(.system(size: 12.5))
+                            .monospacedDigit()
+                            .foregroundStyle(theme.textMeta)
+                    }
+                    DitherSwatch(palette: currentPalette, intensity: backgroundIntensity)
+                        .frame(height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(theme.rim, lineWidth: 1)
+                        }
+                        .accessibilityHidden(true)
+                    Slider(value: $backgroundIntensity, in: 0...1, step: 0.05)
+                        .disabled(!animatedBackground)
+                        .accessibilityLabel("Background intensity")
+                }
+            }
+
+            Hairline().padding(.leading, 16)
+
+            row {
+                Toggle("Animated background", isOn: $animatedBackground)
+                    .foregroundStyle(theme.textBody)
+            }
+
+            Hairline().padding(.leading, 16)
+
+            field {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Text size")
+                            .foregroundStyle(theme.textBody)
+                        Spacer(minLength: 8)
+                        Text("\(textScale)%")
+                            .font(.system(size: 12.5))
+                            .monospacedDigit()
+                            .foregroundStyle(theme.textMeta)
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { Double(textScale) },
+                            set: { textScale = Int($0.rounded()) }
+                        ),
+                        in: Double(TextScale.minimum)...Double(TextScale.maximum),
+                        step: 5
+                    )
+                    .accessibilityLabel("Text size")
+                    .accessibilityValue("\(textScale) percent")
+                }
+            }
+        }
+    }
+
+    private var terminalsCard: some View {
+        SettingsCard("Terminals") {
+            row {
+                Toggle("Show shell greeting", isOn: $app.showShellGreeting)
+                    .foregroundStyle(theme.textBody)
+                    .onChange(of: app.showShellGreeting) { _, value in
+                        UserDefaults.standard.set(value, forKey: "proteus.terminal.showGreeting")
+                    }
+            }
+
+            Hairline().padding(.leading, 16)
+
+            row {
+                HStack(spacing: 10) {
+                    Text("Terminal text size")
+                        .foregroundStyle(theme.textBody)
+                    Spacer(minLength: 8)
+                    Stepper(
+                        value: $terminalFontSize,
+                        in: Double(TerminalController.minFontSize)...Double(TerminalController.maxFontSize),
+                        step: 1
+                    ) {
+                        Text("\(Int(terminalFontSize)) pt")
+                            .font(.system(size: 15))
+                            .monospacedDigit()
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                    .labelsHidden()
+                    Text("\(Int(terminalFontSize)) pt")
+                        .font(.system(size: 15))
+                        .monospacedDigit()
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(minWidth: 44, alignment: .trailing)
+                }
+            }
+
+            Text("Off hides your shell's startup greeting in new terminals. Terminals already open keep their setting.")
+                .font(.system(size: 12))
+                .foregroundStyle(theme.textMeta)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var aboutCard: some View {
+        SettingsCard("About") {
+            RowShell(showsChevron: false) {
+                Text("Version")
+                    .foregroundStyle(theme.textBody)
+                Spacer(minLength: 8)
+                Text(appVersion)
+                    .font(.system(size: 14))
+                    .monospacedDigit()
+                    .foregroundStyle(theme.textSecondary)
+            }
+
+            Hairline().padding(.leading, 16)
+
+            RowShell(showsChevron: false) {
+                Text("Hub")
+                    .foregroundStyle(theme.textBody)
+                Spacer(minLength: 8)
+                Text(app.hubVersion ?? "—")
+                    .font(.system(size: 14))
+                    .foregroundStyle(theme.textSecondary)
+            }
+
+            Hairline().padding(.leading, 16)
+
+            Button {
+                app.reconnect()
+            } label: {
+                RowShell(showsChevron: false) {
+                    Text("Reconnect")
+                        .foregroundStyle(app.hasWorkstation ? theme.accent : theme.textMeta)
+                }
+            }
+            .buttonStyle(RowButtonStyle())
+            .disabled(!app.hasWorkstation)
+
+            Hairline().padding(.leading, 16)
+
+            Text("MIT licensed. Built from the same protocol the desktop speaks.")
+                .font(.system(size: 12))
+                .foregroundStyle(theme.textMeta)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Rows
+
+    /// A row with no chevron: a toggle, a slider, a menu.
+    private func row<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        RowShell(showsChevron: false, content: content)
+    }
+
+    /// A row that is a block of controls: padded on both axes, no 52 pt floor.
+    private func field<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Details
 
     /// "1 account", never "1 accounts".
     private var accountsTitle: String {
@@ -197,72 +378,70 @@ struct SettingsView: View {
         return "On via \(host)"
     }
 
-    private var paletteGrid: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Palette")
-                .font(.subheadline)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10)], spacing: 10) {
-                ForEach(PaletteCatalog.palettes) { palette in
-                    paletteSwatch(palette)
-                }
-            }
-        }
-        .padding(.vertical, 4)
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        return "\(short) (\(build))"
     }
 
+    // MARK: - Palette
+
+    private var paletteGrid: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+            spacing: 12
+        ) {
+            ForEach(PaletteCatalog.palettes) { palette in
+                paletteSwatch(palette)
+            }
+        }
+    }
+
+    /// 48 pt of the palette's own dither, not four dots: the thumbnail is the
+    /// thing being chosen (v19 §4).
     private func paletteSwatch(_ palette: Palette) -> some View {
-        let isSelected = palette.key == paletteKey
-        let mode = palette.mode(dark: colorScheme == .dark)
+        let selected = palette.key == paletteKey
         return Button {
             paletteKey = palette.key
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 4) {
-                    ForEach(mode.waves.indices, id: \.self) { index in
-                        Circle()
-                            .fill(mode.waves[index].color)
-                            .frame(width: 14, height: 14)
+            VStack(spacing: 6) {
+                DitherSwatch(palette: palette, intensity: 0.85)
+                    .frame(height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .strokeBorder(selected ? theme.accent : theme.rim, lineWidth: selected ? 1.5 : 1)
                     }
-                }
                 Text(palette.label)
-                    .font(.caption)
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? theme.textPrimary : theme.textSecondary)
                     .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            .background(
-                Color.primary.opacity(isSelected ? 0.12 : 0.05),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(palette.label)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     // MARK: - Custom slots (v7)
 
     private var customPaletteRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Custom")
-                    .font(.subheadline)
-                Spacer()
+                SectionLabel(text: "Custom")
+                Spacer(minLength: 8)
                 Text("Synced across your devices")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(theme.textMeta)
             }
             HStack(spacing: 12) {
                 ForEach(0..<AppearanceStore.slotCount, id: \.self) { index in
                     customSlot(index)
                 }
-                Spacer()
+                Spacer(minLength: 0)
             }
         }
-        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -278,7 +457,7 @@ struct SettingsView: View {
                     .frame(width: 34, height: 34)
                     .overlay {
                         Circle()
-                            .strokeBorder(selected ? Color.accentColor : Color.clear, lineWidth: 2)
+                            .strokeBorder(selected ? theme.accent : theme.rim, lineWidth: 2)
                             .frame(width: 42, height: 42)
                     }
                     .frame(width: 42, height: 42)
@@ -300,19 +479,82 @@ struct SettingsView: View {
                 ZStack {
                     Circle()
                         .strokeBorder(
-                            Color.secondary,
+                            theme.textMeta,
                             style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
                         )
                         .frame(width: 34, height: 34)
                     Image(systemName: "plus")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(theme.textMeta)
                 }
                 .frame(width: 42, height: 42)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add custom slot \(index + 1)")
         }
+    }
+}
+
+// MARK: - Card pieces (§4)
+
+/// A card: `popover` fill @ 0.92, radius 16, 1 pt hairline, label as its first
+/// row. Cards are 12 pt apart and nothing floats between them.
+private struct SettingsCard<Content: View>: View {
+    @Environment(\.proteusTheme) private var theme
+
+    private let title: String
+    private let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title.uppercased())
+                .font(.system(size: 11.5, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(theme.textMeta)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 4)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.popover, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(theme.hairline, lineWidth: 1)
+        }
+    }
+}
+
+/// The visual half of a row: 52 pt floor, 16 pt inset, optional chevron.
+/// Tappable rows wrap it in a `Button`/`NavigationLink`.
+private struct RowShell<Content: View>: View {
+    @Environment(\.proteusTheme) private var theme
+
+    private let showsChevron: Bool
+    private let content: Content
+
+    init(showsChevron: Bool = true, @ViewBuilder content: () -> Content) {
+        self.showsChevron = showsChevron
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            content
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.textMeta.opacity(0.75))
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
     }
 }
 

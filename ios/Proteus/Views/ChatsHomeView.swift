@@ -105,6 +105,7 @@ struct ChatsHomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
+            .chromeToolbar(theme)
             .searchable(
                 text: $search,
                 isPresented: $searchPresented,

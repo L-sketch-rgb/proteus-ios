@@ -105,10 +105,12 @@ extension View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius))
     }
 
-    /// Translucent navigation-bar surface (material on every OS).
-    func glassToolbar() -> some View {
+    /// The v19 chrome band (docs/design/v19-ios-shell.md §1): the palette's
+    /// chrome colour, not a material, so the wave still reads behind the bar.
+    /// A material would blur the dither into a grey smear.
+    func chromeToolbar(_ theme: ProteusTheme) -> some View {
         self
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(theme.chrome, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
     }
 }

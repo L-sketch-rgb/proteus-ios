@@ -102,6 +102,7 @@ struct ProjectChatsView: View {
         .padding(.vertical, 8)
         .navigationTitle(scope.title)
         .navigationBarTitleDisplayMode(.inline)
+        .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {

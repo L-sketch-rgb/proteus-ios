@@ -26,6 +26,9 @@ struct ProteusTheme: Equatable {
     var popover: Color
     /// L4. Sheets.
     var sheet: Color
+    /// v19 §5: the terminal is the one opaque surface in the app — glyphs over
+    /// a moving dither are unreadable. Everything around it is the panel model.
+    var terminalSurface: Color
 
     // MARK: Lines and fills
 
@@ -64,6 +67,7 @@ struct ProteusTheme: Equatable {
             chrome = Color(hex: "#171A21").opacity(0.80)
             popover = Color(hex: "#1D2333").opacity(0.92)
             sheet = Color(hex: "#181C27").opacity(0.94)
+            terminalSurface = Color(hex: "#0E1016")
             rim = Color.white.opacity(0.09)
             hairline = Color.white.opacity(0.055)
             cardFill = Color.white.opacity(0.035)
@@ -86,6 +90,7 @@ struct ProteusTheme: Equatable {
             chrome = Color.white.opacity(0.72)
             popover = Color.white.opacity(0.96)
             sheet = Color.white.opacity(0.96)
+            terminalSurface = Color(hex: "#F6F7FB")
             rim = Color.black.opacity(0.10)
             hairline = Color.black.opacity(0.08)
             cardFill = Color.black.opacity(0.04)

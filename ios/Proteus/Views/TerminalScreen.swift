@@ -395,6 +395,7 @@ private struct TerminalViewRepresentable: UIViewRepresentable {
 struct TerminalScreen: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.proteusTheme) private var theme
 
     @StateObject private var controller = TerminalController()
     @State private var didBind = false
@@ -452,14 +453,15 @@ struct TerminalScreen: View {
     private var screen: some View {
         ZStack(alignment: .top) {
             TerminalViewRepresentable(controller: controller)
-                .background(Color.clear)
+                .background(theme.terminalSurface)
 
             if let code = exitCode {
                 HStack(spacing: 8) {
                     Image(systemName: "termination")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(theme.statusNeedsYou)
                     Text("Shell exited (code \(code)).")
                         .font(.footnote.weight(.medium))
+                        .foregroundStyle(theme.textPrimary)
                     Spacer()
                     Button("Close") {
                         if let id = controller.termId {
@@ -469,11 +471,20 @@ struct TerminalScreen: View {
                     .font(.footnote.weight(.semibold))
                 }
                 .padding(10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(theme.popover, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(theme.hairline, lineWidth: 1)
+                }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
             }
         }
+        .background(theme.terminalSurface)
+        .clipShape(panelShape)
+        .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             TerminalAccessoryBar(
                 controller: controller,
@@ -484,11 +495,16 @@ struct TerminalScreen: View {
         }
         .navigationTitle(controller.title)
         .navigationBarTitleDisplayMode(.inline)
+        .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 optionsMenu
             }
         }
+    }
+
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
     }
 
     private var optionsMenu: some View {
@@ -532,6 +548,7 @@ struct TerminalScreen: View {
 
 private struct TerminalAccessoryBar: View {
     @ObservedObject var controller: TerminalController
+    @Environment(\.proteusTheme) private var theme
     let onKey: (TerminalKey) -> Void
     let onText: (String) -> Void
     let onHideKeyboard: () -> Void
@@ -566,10 +583,7 @@ private struct TerminalAccessoryBar: View {
             .padding(.horizontal, 10)
             .frame(height: 44)
         }
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Divider().opacity(0.4)
-        }
+        .chromeBar(theme, edge: .top)
     }
 
     private func barButton(_ label: String, action: @escaping () -> Void) -> some View {

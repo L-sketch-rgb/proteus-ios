@@ -27,16 +27,16 @@ struct ProteusRootView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            ChatsHomeView()
+            WaveTab { ChatsHomeView() }
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
                 .badge(needsYou)
                 .tag(ProteusTab.chats)
 
-            TerminalsHomeView()
+            WaveTab { TerminalsHomeView() }
                 .tabItem { Label("Terminals", systemImage: "terminal") }
                 .tag(ProteusTab.terminals)
 
-            SettingsView(showsDoneButton: false)
+            WaveTab { SettingsView(showsDoneButton: false) }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(ProteusTab.settings)
         }
@@ -61,6 +61,27 @@ struct ProteusRootView: View {
             tab = .settings
         default:
             break
+        }
+    }
+}
+
+/// One tab, with the wave underneath it.
+///
+/// This is the whole dither fix (docs/DECISIONS.md D55): the wave has to be a
+/// child of the tab, not a sibling of the `TabView`, because the tab controller
+/// fills its page with `systemBackground`. Screens above it must stay
+/// translucent — the panel at 0.94 is what the design counts on.
+private struct WaveTab<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            WaveBackdrop()
+            content
         }
     }
 }

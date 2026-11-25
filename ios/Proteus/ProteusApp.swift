@@ -20,8 +20,6 @@ struct RootView: View {
 
     @AppStorage("proteus.palette") private var paletteKey = "blue"
     @AppStorage("proteus.theme") private var themeRaw = AppTheme.dark.rawValue
-    @AppStorage("proteus.animatedBackground") private var animatedBackground = true
-    @AppStorage("proteus.backgroundIntensity") private var backgroundIntensity = 0.8
     @AppStorage(TextScale.key) private var textScale = TextScale.default
 
     private var theme: AppTheme {
@@ -51,11 +49,11 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            WaveBackground(
-                palette: palette,
-                animated: animatedBackground,
-                intensity: backgroundIntensity
-            )
+            // Not the wave: it lives inside each tab (see `WaveTab`), because a
+            // tab controller paints its own opaque page background over
+            // anything behind the `TabView`. This is only the colour a launch
+            // shows for the frame before the tabs appear.
+            palette.mode(dark: isDark).background.color
             ProteusRootView()
         }
         .tint(accent)

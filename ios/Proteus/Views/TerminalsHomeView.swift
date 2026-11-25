@@ -14,6 +14,10 @@ struct TerminalsHomeView: View {
     @State private var showNew = false
     @State private var didRouteDemo = false
 
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             List {
@@ -46,8 +50,15 @@ struct TerminalsHomeView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
             .background(theme.readingSurface)
+            .clipShape(panelShape)
+            .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
             .navigationTitle("Terminals")
+            .chromeToolbar(theme)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {

@@ -5,6 +5,7 @@ import ProteusKit
 struct ChatView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.proteusTheme) private var theme
     @ObservedObject var chat: ChatSessionModel
     @AppStorage("proteus.palette") private var paletteKey = "blue"
     @Environment(\.paletteAccent) private var accent
@@ -102,7 +103,7 @@ struct ChatView: View {
         }
         .navigationTitle(chat.title)
         .navigationBarTitleDisplayMode(.inline)
-        .glassToolbar()
+        .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
@@ -314,6 +315,7 @@ struct ChatView: View {
         .padding(.horizontal, ProteusTheme.Space.gutter)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
+        .background(theme.chrome)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.primary.opacity(0.07))
