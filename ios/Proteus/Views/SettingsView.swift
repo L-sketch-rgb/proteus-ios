@@ -11,7 +11,7 @@ struct SettingsView: View {
     /// It stays `true` when the screen is presented as a sheet.
     var showsDoneButton = true
 
-    @AppStorage("proteus.theme") private var themeRaw = AppTheme.system.rawValue
+    @AppStorage("proteus.theme") private var themeRaw = AppTheme.dark.rawValue
     @AppStorage("proteus.palette") private var paletteKey = "blue"
     @AppStorage("proteus.animatedBackground") private var animatedBackground = true
     @AppStorage("proteus.backgroundIntensity") private var backgroundIntensity = 0.8
@@ -144,6 +144,16 @@ struct SettingsView: View {
                     LabeledContent("Hub") { Text(app.hubVersion ?? "—") }
                     Button("Reconnect") { app.reconnect() }
                         .disabled(!app.hasWorkstation)
+                }
+
+                // v19 §0.3: the last card used to sit under the tab bar. The
+                // card stack lands in phase A follow-up; until then this keeps
+                // the bottom of the form reachable.
+                Section {
+                    Color.clear
+                        .frame(height: 56)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             }
             .scrollContentBackground(.hidden)
