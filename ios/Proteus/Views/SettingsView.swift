@@ -501,15 +501,6 @@ struct SettingsView: View {
             .accessibilityLabel("Add custom slot \(index + 1)")
         }
     }
-}
-
-// MARK: - Sheet target
-
-private struct CustomSlotTarget: Identifiable {
-    let index: Int
-    let slot: AppearanceSlot?
-    var id: Int { index }
-}
 
     // MARK: - Demo routing
 
@@ -533,3 +524,12 @@ private struct CustomSlotTarget: Identifiable {
             break
         }
     }
+}
+
+// MARK: - Sheet target
+
+private struct CustomSlotTarget: Identifiable {
+    let index: Int
+    let slot: AppearanceSlot?
+    var id: Int { index }
+}
