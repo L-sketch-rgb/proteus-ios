@@ -57,7 +57,7 @@ struct ProteusRootView: View {
         switch app.demoScreen {
         case "terminal":
             tab = .terminals
-        case "settings":
+        case "settings", "accounts", "workstations":
             tab = .settings
         default:
             break

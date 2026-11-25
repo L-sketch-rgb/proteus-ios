@@ -26,6 +26,7 @@ struct SettingsView: View {
     @AppStorage("proteus.terminal.fontSize") private var terminalFontSize = 12.0
 
     @State private var slotEditor: CustomSlotTarget?
+    @State private var demoRoute: DemoSettingsRoute?
 
     private var panelShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -63,7 +64,13 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .chromeToolbar(theme)
-            .toolbar {
+            .navigationDestination(item: $demoRoute) { route in
+                switch route {
+                case .workstations: WorkstationsView()
+                case .accounts: AccountsProvidersView()
+                }
+            }
+            .onAppear { routeDemoIfNeeded() }            .toolbar {
                 if showsDoneButton {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { dismiss() }
@@ -503,3 +510,26 @@ private struct CustomSlotTarget: Identifiable {
     let slot: AppearanceSlot?
     var id: Int { index }
 }
+
+    // MARK: - Demo routing
+
+    /// `-ProteusDemoScreen=workstations|accounts` — the two screens 1.3 rewrote,
+    /// so CI captures them instead of taking my word for it.
+    private enum DemoSettingsRoute: String, Identifiable {
+        case workstations
+        case accounts
+
+        var id: String { rawValue }
+    }
+
+    private func routeDemoIfNeeded() {
+        guard app.isDemo else { return }
+        switch app.demoScreen {
+        case "workstations":
+            DispatchQueue.main.async { demoRoute = .workstations }
+        case "accounts":
+            DispatchQueue.main.async { demoRoute = .accounts }
+        default:
+            break
+        }
+    }

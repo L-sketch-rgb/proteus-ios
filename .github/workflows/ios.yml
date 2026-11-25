@@ -203,7 +203,7 @@ jobs:
             return 1
           }
 
-          for screen in chats newchat agents project terminal settings; do
+          for screen in chats newchat agents project terminal settings workstations accounts; do
             capture "$screen"
           done
 
@@ -238,6 +238,6 @@ jobs:
         working-directory: ios
         run: |
           set -euo pipefail
-          for screen in chats newchat settings terminal; do
+          for screen in chats newchat settings terminal workstations accounts; do
             xcrun swift dither-check.swift "screens/$screen.png"
           done
