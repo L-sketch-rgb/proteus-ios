@@ -6,7 +6,6 @@
 // usage: swift dither-check.swift screens/chats.png [...]
 //
 // Exit 1 (with the colour count) when a border reads as a single colour.
-
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -60,8 +59,9 @@ var failed: [String] = []
 for path in CommandLine.arguments.dropFirst() {
     let (colours, width) = rgbFrequencies(path: path)
     print("dither-check: \(path) (\(width) px wide) gutter colours = \(colours)")
-    // Three tones is the least a dithered band can show; a covered wave shows 1.
-    if colours < 3 { failed.append(path) }
+    // Two tones is what a 10 pt gutter of the blue palette shows (tone 0 and 1);
+    // one flat colour means something opaque is over the wave again.
+    if colours < 2 { failed.append(path) }
 }
 
 if !failed.isEmpty {

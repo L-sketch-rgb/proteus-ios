@@ -454,6 +454,9 @@ struct TerminalScreen: View {
         ZStack(alignment: .top) {
             TerminalViewRepresentable(controller: controller)
                 .background(theme.terminalSurface)
+                // Text must not start under the panel's rounded corner.
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
 
             if let code = exitCode {
                 HStack(spacing: 8) {
