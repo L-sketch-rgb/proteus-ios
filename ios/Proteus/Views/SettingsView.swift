@@ -80,11 +80,11 @@ struct SettingsView: View {
     // MARK: - Cards
 
     private var workstationsCard: some View {
-        SettingsCard("Workstations") {
+        PanelCard("Workstations") {
             NavigationLink {
                 WorkstationsView()
             } label: {
-                RowShell {
+                PanelRow {
                     HStack(spacing: 10) {
                         StatusDot(state: app.hasWorkstation ? .working : .idle, size: 8)
                         VStack(alignment: .leading, spacing: 2) {
@@ -107,11 +107,11 @@ struct SettingsView: View {
     }
 
     private var notificationsCard: some View {
-        SettingsCard("Notifications") {
+        PanelCard("Notifications") {
             NavigationLink {
                 NotificationsView()
             } label: {
-                RowShell {
+                PanelRow {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Push notifications")
                             .foregroundStyle(theme.textPrimary)
@@ -126,11 +126,11 @@ struct SettingsView: View {
     }
 
     private var accountsCard: some View {
-        SettingsCard("Accounts & providers") {
+        PanelCard("Accounts & providers") {
             NavigationLink {
                 AccountsProvidersView()
             } label: {
-                RowShell {
+                PanelRow {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(accountsTitle)
                             .foregroundStyle(theme.textPrimary)
@@ -148,8 +148,8 @@ struct SettingsView: View {
     }
 
     private var modelCard: some View {
-        SettingsCard("Default model") {
-            RowShell(showsChevron: false) {
+        PanelCard("Default model") {
+            PanelRow(showsChevron: false) {
                 ModelMenuButton(
                     title: app.modelLabel(for: app.defaultModel),
                     menu: app.modelMenu,
@@ -161,7 +161,7 @@ struct SettingsView: View {
     }
 
     private var appearanceCard: some View {
-        SettingsCard("Appearance") {
+        PanelCard("Appearance") {
             field {
                 Picker("Theme", selection: $themeRaw) {
                     ForEach(AppTheme.allCases) { theme in
@@ -247,7 +247,7 @@ struct SettingsView: View {
     }
 
     private var terminalsCard: some View {
-        SettingsCard("Terminals") {
+        PanelCard("Terminals") {
             row {
                 Toggle("Show shell greeting", isOn: $app.showShellGreeting)
                     .foregroundStyle(theme.textBody)
@@ -292,8 +292,8 @@ struct SettingsView: View {
     }
 
     private var aboutCard: some View {
-        SettingsCard("About") {
-            RowShell(showsChevron: false) {
+        PanelCard("About") {
+            PanelRow(showsChevron: false) {
                 Text("Version")
                     .foregroundStyle(theme.textBody)
                 Spacer(minLength: 8)
@@ -305,7 +305,7 @@ struct SettingsView: View {
 
             Hairline().padding(.leading, 16)
 
-            RowShell(showsChevron: false) {
+            PanelRow(showsChevron: false) {
                 Text("Hub")
                     .foregroundStyle(theme.textBody)
                 Spacer(minLength: 8)
@@ -319,7 +319,7 @@ struct SettingsView: View {
             Button {
                 app.reconnect()
             } label: {
-                RowShell(showsChevron: false) {
+                PanelRow(showsChevron: false) {
                     Text("Reconnect")
                         .foregroundStyle(app.hasWorkstation ? theme.accent : theme.textMeta)
                 }
@@ -342,7 +342,7 @@ struct SettingsView: View {
 
     /// A row with no chevron: a toggle, a slider, a menu.
     private func row<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        RowShell(showsChevron: false, content: content)
+        PanelRow(showsChevron: false, content: content)
     }
 
     /// A row that is a block of controls: padded on both axes, no 52 pt floor.
@@ -496,68 +496,7 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Card pieces (§4)
-
-/// A card: `popover` fill @ 0.92, radius 16, 1 pt hairline, label as its first
-/// row. Cards are 12 pt apart and nothing floats between them.
-private struct SettingsCard<Content: View>: View {
-    @Environment(\.proteusTheme) private var theme
-
-    private let title: String
-    private let content: Content
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title.uppercased())
-                .font(.system(size: 11.5, weight: .semibold))
-                .tracking(0.6)
-                .foregroundStyle(theme.textMeta)
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 4)
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.popover, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(theme.hairline, lineWidth: 1)
-        }
-    }
-}
-
-/// The visual half of a row: 52 pt floor, 16 pt inset, optional chevron.
-/// Tappable rows wrap it in a `Button`/`NavigationLink`.
-private struct RowShell<Content: View>: View {
-    @Environment(\.proteusTheme) private var theme
-
-    private let showsChevron: Bool
-    private let content: Content
-
-    init(showsChevron: Bool = true, @ViewBuilder content: () -> Content) {
-        self.showsChevron = showsChevron
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            content
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(theme.textMeta.opacity(0.75))
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(minHeight: 52)
-        .contentShape(Rectangle())
-    }
-}
+// MARK: - Sheet target
 
 private struct CustomSlotTarget: Identifiable {
     let index: Int

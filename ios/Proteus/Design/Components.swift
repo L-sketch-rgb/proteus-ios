@@ -322,3 +322,102 @@ extension View {
     }
     func cardFrame(_ role: Color) -> some View { modifier(CardFrame(role: role)) }
 }
+
+/// A v19 card (docs/design/v19-ios-shell.md §4): `popover` fill, 16 pt radius,
+/// 1 pt hairline, and the section label as its first row. Cards are 12 pt apart
+/// and nothing floats between them.
+struct PanelCard<Content: View>: View {
+    @Environment(\.proteusTheme) private var theme
+
+    private let title: String
+    private let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title.uppercased())
+                .font(.system(size: 11.5, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(theme.textMeta)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 4)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.popover, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(theme.hairline, lineWidth: 1)
+        }
+    }
+}
+
+/// The visual half of a card row: 52 pt floor, 16 pt inset, optional chevron.
+/// Tappable rows wrap it in a `Button`, a `NavigationLink` or a `Menu`.
+struct PanelRow<Content: View>: View {
+    @Environment(\.proteusTheme) private var theme
+
+    private let showsChevron: Bool
+    private let content: Content
+
+    init(showsChevron: Bool = true, @ViewBuilder content: () -> Content) {
+        self.showsChevron = showsChevron
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            content
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.textMeta.opacity(0.75))
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
+    }
+}
+
+/// A card title with a trailing menu — the row that opens a card's actions
+/// (`…` for a provider, say) without a second navigation bar.
+struct PanelMenuHeader<MenuContent: View>: View {
+    @Environment(\.proteusTheme) private var theme
+
+    private let title: String
+    private let menu: MenuContent
+
+    init(_ title: String, @ViewBuilder menu: () -> MenuContent) {
+        self.title = title
+        self.menu = menu()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title.uppercased())
+                .font(.system(size: 11.5, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(theme.textMeta)
+            Spacer(minLength: 8)
+            Menu {
+                menu
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.textMeta)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+}

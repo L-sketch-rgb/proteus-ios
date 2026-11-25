@@ -22,6 +22,9 @@ struct ChatView: View {
     @State private var deleteTarget: SessionInfo?
     @State private var showMoveDialog = false
     @State private var scrollTargetId: String?
+    /// Latest row frames, so a content change only re-anchors when the anchor
+    /// has really left the viewport (D58).
+    @State private var rowFrames: [String: CGRect] = [:]
     @State private var didOpenDemoAgents = false
     /// v10 §12: first visible row and the count of rows added since scrolling up.
     @State private var anchorRowId: String?
@@ -410,6 +413,7 @@ struct ChatView: View {
             .onPreferenceChange(RowFrameKey.self) { frames in
                 // v10 §12: the first row at least partly inside the viewport is
                 // the anchor. Only tracked while scrolled up.
+                rowFrames = frames
                 guard !atBottom else { return }
                 let visible = frames.filter { entry in
                     entry.value.maxY > 1 && entry.value.minY < outer.size.height
@@ -431,12 +435,16 @@ struct ChatView: View {
             .onChange(of: chat.rows.count) { _, _ in
                 // A structural change (a tool group expanding, new cards) can
                 // move the content while scrolled up. Anchor the first visible
-                // row again after layout.
+                // row again *only if it actually left the viewport* — the old
+                // unconditional scrollTo yanked the transcript back up whenever
+                // a row appeared, which is what made scrolling down feel broken.
                 guard !atBottom, let anchorRowId else { return }
+                guard rowFrames[anchorRowId].map({ $0.maxY <= 0 }) ?? true else { return }
                 DispatchQueue.main.async {
                     proxy.scrollTo(anchorRowId, anchor: .top)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: scrollTargetId) { _, id in
                 guard let id else { return }
                 withAnimation(.easeOut(duration: 0.2)) {

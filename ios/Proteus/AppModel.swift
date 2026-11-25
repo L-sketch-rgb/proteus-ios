@@ -296,6 +296,23 @@ final class AppModel: ObservableObject {
             host: trimmedHost,
             port: port
         )
+        // Re-adding the same address updates that entry instead of leaving two
+        // rows that point at one machine with one working token (D58).
+        if let existing = workstations.firstIndex(where: {
+            $0.host.caseInsensitiveCompare(trimmedHost) == .orderedSame && $0.port == port
+        }) {
+            let previous = workstations[existing]
+            workstations[existing] = Workstation(
+                id: previous.id,
+                name: workstation.name,
+                host: workstation.host,
+                port: workstation.port
+            )
+            tokenStore.setToken(trimmedToken, for: previous.id.uuidString)
+            saveWorkstations()
+            activate(workstations[existing])
+            return true
+        }
         workstations.append(workstation)
         tokenStore.setToken(trimmedToken, for: workstation.id.uuidString)
         saveWorkstations()

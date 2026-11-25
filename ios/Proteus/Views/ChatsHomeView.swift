@@ -217,7 +217,6 @@ struct ChatsHomeView: View {
             .padding(.bottom, 28)
         }
         .scrollIndicators(.hidden)
-        .refreshable { app.reconnect() }
         .background(theme.readingSurface)
         .clipShape(panelShape)
         .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
