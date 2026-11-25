@@ -103,6 +103,7 @@ struct ChatView: View {
         }
         .navigationTitle(chat.title)
         .navigationBarTitleDisplayMode(.inline)
+        .screenWave()
         .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .principal) {

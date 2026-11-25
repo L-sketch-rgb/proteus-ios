@@ -485,6 +485,7 @@ struct TerminalScreen: View {
         .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .screenWave()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             TerminalAccessoryBar(
                 controller: controller,

@@ -67,10 +67,10 @@ struct ProteusRootView: View {
 
 /// One tab, with the wave underneath it.
 ///
-/// This is the whole dither fix (docs/DECISIONS.md D55): the wave has to be a
-/// child of the tab, not a sibling of the `TabView`, because the tab controller
-/// fills its page with `systemBackground`. Screens above it must stay
-/// translucent — the panel at 0.94 is what the design counts on.
+/// See `screenWave()`: the wave has to be drawn inside the tab's navigation
+/// content, not behind the `TabView` and not even here — the tab controller and
+/// the navigation container each fill their view with `systemBackground`, which
+/// is what hid the dither in every build before 1.1 (docs/DECISIONS.md D55).
 private struct WaveTab<Content: View>: View {
     private let content: Content
 
@@ -79,9 +79,6 @@ private struct WaveTab<Content: View>: View {
     }
 
     var body: some View {
-        ZStack {
-            WaveBackdrop()
-            content
-        }
+        content
     }
 }

@@ -59,6 +59,7 @@ struct SettingsView: View {
             .padding(.horizontal, 10)
             .padding(.top, 8)
             .padding(.bottom, 8)
+            .screenWave()
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .chromeToolbar(theme)

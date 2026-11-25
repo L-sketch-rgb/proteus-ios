@@ -57,6 +57,7 @@ struct TerminalsHomeView: View {
             .padding(.horizontal, 10)
             .padding(.top, 8)
             .padding(.bottom, 8)
+            .screenWave()
             .navigationTitle("Terminals")
             .chromeToolbar(theme)
             .toolbar {

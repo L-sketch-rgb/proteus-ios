@@ -95,3 +95,17 @@ struct DitherSwatch: View {
         .background(mode.background.color)
     }
 }
+
+extension View {
+    /// Puts the wave behind this screen.
+    ///
+    /// Applied **inside** every `NavigationStack`, never outside it: the stack's
+    /// own container view paints `systemBackground` (black in dark, white in
+    /// light), and the tab controller paints another one. A wave behind either
+    /// of those is invisible — that was v18 and v19 (docs/DECISIONS.md D55).
+    /// The wave ignores the safe area, so it also reaches under the nav bar and
+    /// the tab bar, where the 0.80 chrome lets it read.
+    func screenWave() -> some View {
+        background { WaveBackdrop() }
+    }
+}

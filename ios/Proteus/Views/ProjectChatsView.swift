@@ -100,6 +100,7 @@ struct ProjectChatsView: View {
         .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .screenWave()
         .navigationTitle(scope.title)
         .navigationBarTitleDisplayMode(.inline)
         .chromeToolbar(theme)

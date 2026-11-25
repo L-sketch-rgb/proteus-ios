@@ -103,6 +103,7 @@ struct ChatsHomeView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .screenWave()
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
             .chromeToolbar(theme)
