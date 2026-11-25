@@ -216,11 +216,17 @@ jobs:
           xcrun simctl io "$DEVICE" screenshot "screens/live.png"
           # A process that died between launch and the screenshot means a crash
           # on the real path; fail loudly instead of shipping the IPA quietly.
-          if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
-            echo "$BUNDLE_ID is not running after a plain launch" >&2
-            ls -l ~/Library/Logs/DiagnosticReports 2>/dev/null || true
-            exit 1
-          fi
+          # `launchctl list | grep -q` was the wrong shape: grep exits early,
+          # simctl gets SIGPIPE, and pipefail failed the run on a healthy app.
+          RUNNING="$(xcrun simctl spawn "$DEVICE" launchctl list 2>/dev/null || true)"
+          case "$RUNNING" in
+            *"$BUNDLE_ID"*) ;;
+            *)
+              echo "$BUNDLE_ID is not running after a plain launch" >&2
+              ls -l ~/Library/Logs/DiagnosticReports 2>/dev/null || true
+              exit 1
+              ;;
+          esac
           ls -lh screens
 
       - name: Upload screenshots
