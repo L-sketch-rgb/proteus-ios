@@ -31,6 +31,8 @@ struct ProteusTheme: Equatable {
 
     var rim: Color
     var hairline: Color
+    /// v19: the tile and card fill inside a panel.
+    var cardFill: Color
     var fieldFill: Color
     var pressedRow: Color
     var selectedRow: Color
@@ -55,12 +57,16 @@ struct ProteusTheme: Equatable {
         self.accent = accent
 
         if isDark {
-            readingSurface = Color(hex: "#13151C").opacity(0.66)
-            chrome = Color(hex: "#1D2333").opacity(0.52)
+            // v19 §1: 0.94. The dither no longer runs under the text — that was
+            // what made every list hard to read even with good contrast. The
+            // wave now lives in the 10 pt gutter and behind the chrome bands.
+            readingSurface = Color(hex: "#13151C").opacity(0.94)
+            chrome = Color(hex: "#171A21").opacity(0.80)
             popover = Color(hex: "#1D2333").opacity(0.92)
             sheet = Color(hex: "#181C27").opacity(0.94)
             rim = Color.white.opacity(0.09)
-            hairline = Color.white.opacity(0.07)
+            hairline = Color.white.opacity(0.055)
+            cardFill = Color.white.opacity(0.035)
             fieldFill = Color.white.opacity(0.05)
             pressedRow = Color.white.opacity(0.10)
             selectedRow = accent.opacity(0.20)
@@ -82,6 +88,7 @@ struct ProteusTheme: Equatable {
             sheet = Color.white.opacity(0.96)
             rim = Color.black.opacity(0.10)
             hairline = Color.black.opacity(0.08)
+            cardFill = Color.black.opacity(0.04)
             fieldFill = Color.black.opacity(0.04)
             pressedRow = Color.black.opacity(0.08)
             selectedRow = accent.opacity(0.16)

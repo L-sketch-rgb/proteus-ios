@@ -281,14 +281,28 @@ final class QueueAndScheduleTests: XCTestCase {
         XCTAssertEqual(tomorrow.iso, "2026-11-10T21:00:00Z")
     }
 
-    func testCustomDatesAreTodayTomorrowAndFiveWeekdays() {
+    func testCustomDatesAreTodayTomorrowAndTheNextSevenDays() {
         let options = SchedulePresets.customDates(now: fixedNow(), calendar: utcCalendar())
         XCTAssertEqual(options.map(\.label), [
-            "Today", "Tomorrow", "Wednesday", "Thursday", "Friday", "Monday", "Tuesday",
+            "Today", "Tomorrow", "Wednesday", "Thursday", "Friday", "Saturday",
+            "Sunday", "Monday", "Tuesday",
         ])
-        XCTAssertEqual(options.count, 7)
+        XCTAssertEqual(options.count, 9)
         XCTAssertEqual(SchedulePresets.isoString(options[2].date), "2026-11-11T00:00:00Z")
-        XCTAssertEqual(SchedulePresets.isoString(options[6].date), "2026-11-17T00:00:00Z")
+        // v17-D: Sunday is selectable, and the list still ends seven days out.
+        XCTAssertEqual(SchedulePresets.isoString(options[6].date), "2026-11-15T00:00:00Z")
+        XCTAssertEqual(SchedulePresets.isoString(options[8].date), "2026-11-17T00:00:00Z")
+    }
+
+    func testSundayIsSelectableAtAnyHour() {
+        let calendar = utcCalendar()
+        let now = fixedNow()
+        let dates = SchedulePresets.customDates(now: now, calendar: calendar)
+        let sunday = dates[6].date
+        XCTAssertEqual(SchedulePresets.isoString(sunday), "2026-11-15T00:00:00Z")
+        let early = SchedulePresets.customChoice(day: sunday, hour: 3, minute: 5, now: now, calendar: calendar)
+        XCTAssertEqual(early.iso, "2026-11-15T03:05:00Z")
+        XCTAssertEqual(early.phrase, "Sunday at 03:05")
     }
 
     func testCustomChoiceUsesLocalHourAndMinuteSteps() {

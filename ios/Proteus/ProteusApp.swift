@@ -19,13 +19,13 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @AppStorage("proteus.palette") private var paletteKey = "blue"
-    @AppStorage("proteus.theme") private var themeRaw = AppTheme.system.rawValue
+    @AppStorage("proteus.theme") private var themeRaw = AppTheme.dark.rawValue
     @AppStorage("proteus.animatedBackground") private var animatedBackground = true
     @AppStorage("proteus.backgroundIntensity") private var backgroundIntensity = 0.8
     @AppStorage(TextScale.key) private var textScale = TextScale.default
 
     private var theme: AppTheme {
-        AppTheme(rawValue: themeRaw) ?? .system
+        AppTheme(rawValue: themeRaw) ?? .dark
     }
 
     private var isDark: Bool {

@@ -1,107 +1,133 @@
 import SwiftUI
 import ProteusKit
 
-/// Chats, rebuilt for touch (docs/design/v18-ios.md §3).
+/// Chats: the project browser (docs/design/v19-ios-shell.md §2).
 ///
-/// The desktop's 56 px project rail becomes a horizontal strip of chips that
-/// stays under the nav bar; the slot's list is one scrolling column with the
-/// desktop's Active / Older split. Everything rare lives in the long-press menu
-/// so the screen stays a list of chats, not a control panel.
+/// The tab is a 2-up grid of project tiles — pinned ones first — with the chats
+/// that never got a project as one link row underneath. A chat lives inside its
+/// project, so no screen lists the same chats twice and the list has nothing to
+/// group.
 struct ChatsHomeView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.proteusTheme) private var theme
 
-    @State private var rail: RailSelection = .all
-    @State private var search = ""
+    @AppStorage(PinnedProjects.key) private var pinnedRaw = PinnedProjects.encode([])
+
     @State private var path = NavigationPath()
-    @State private var collapsed: Set<String> = []
+    @State private var search = ""
+    @State private var searchPresented = false
     @State private var showNewChat = false
     @State private var newChatProject = ""
     @State private var renameTarget: SessionInfo?
     @State private var deleteTarget: SessionInfo?
     @State private var projectEditorTarget: ProjectEditTarget?
     @State private var deleteProjectTarget: ProjectDef?
-    @State private var didRouteDemo = false
     @State private var showWorkstations = false
+    @State private var didRouteDemo = false
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10),
+    ]
+
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+    }
 
     // MARK: - Data
 
-    private var visibleSessions: [SessionInfo] {
-        let listing = app.filteredListing(search: search)
-        let all = listing.projects.flatMap(\.sessions) + listing.chats
-        switch rail {
-        case .all:
-            return all
-        case .project(let name):
-            return all.filter { $0.project == name }
-        case .chats:
-            let known = Set(app.projects.map(\.name))
-            return all.filter { $0.project.isEmpty || !known.contains($0.project) }
+    private var pinned: [String] { PinnedProjects.decode(pinnedRaw) }
+
+    private func chats(in name: String) -> [SessionInfo] {
+        app.sessions.filter { $0.project == name }
+    }
+
+    private var unfiledChats: [SessionInfo] {
+        let known = Set(app.projects.map(\.name))
+        return app.sessions.filter { $0.project.isEmpty || !known.contains($0.project) }
+    }
+
+    private func lastUpdate(_ chats: [SessionInfo]) -> Date {
+        chats.compactMap { Formatting.parseISO($0.updatedAt) }.max() ?? .distantPast
+    }
+
+    private func latest(_ chats: [SessionInfo]) -> SessionInfo? {
+        chats.max { lhs, rhs in
+            (Formatting.parseISO(lhs.updatedAt) ?? .distantPast)
+                < (Formatting.parseISO(rhs.updatedAt) ?? .distantPast)
         }
     }
 
-    private var groups: [ChatGroup] {
-        ChatGroups.groups(
-            for: visibleSessions,
-            scope: rail == .chats ? .oneOff : .project,
-            lastSeen: { app.lastSeenAt($0) }
-        )
+    private func needsYou(_ chats: [SessionInfo]) -> Bool {
+        chats.contains { session in
+            session.statusKind == .waiting || session.statusKind == .error || app.isUnread(session)
+        }
     }
 
-    private var needsYouCount: Int {
-        groups.first(where: { $0.kind == .needsYou })?.sessions.count ?? 0
+    /// Pinned projects in pin order, then everything else by last activity.
+    private var orderedProjects: [ProjectDef] {
+        var byName: [String: ProjectDef] = [:]
+        for project in app.projects { byName[project.name] = project }
+        var out: [ProjectDef] = []
+        for name in pinned {
+            if let project = byName.removeValue(forKey: name) { out.append(project) }
+        }
+        let rest = byName.values.sorted { lastUpdate(chats(in: $0.name)) > lastUpdate(chats(in: $1.name)) }
+        return out + rest
     }
 
-    private var summary: String {
-        let total = visibleSessions.count
-        if total == 0 { return "" }
-        var parts: [String] = []
-        if needsYouCount > 0 { parts.append("\(needsYouCount) need you") }
-        parts.append("\(total) chat\(total == 1 ? "" : "s")")
-        return parts.joined(separator: " · ")
+    private var pinnedProjects: [ProjectDef] {
+        let pins = pinned
+        return orderedProjects.filter { pins.contains($0.name) }
+    }
+
+    private var otherProjects: [ProjectDef] {
+        let pins = pinned
+        return orderedProjects.filter { !pins.contains($0.name) }
+    }
+
+    private var showsEmptyState: Bool {
+        search.isEmpty && app.projects.isEmpty && unfiledChats.isEmpty
     }
 
     // MARK: - Body
 
     var body: some View {
         NavigationStack(path: $path) {
-            List {
-                if visibleSessions.isEmpty {
+            VStack(spacing: 0) {
+                if showsEmptyState {
                     emptyState
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ForEach(groups) { group in
-                        section(for: group)
-                    }
+                    panel
                 }
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(theme.readingSurface)
-            .listRowSpacing(0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("Chats")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(
                 text: $search,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search chats"
+                isPresented: $searchPresented,
+                placement: .navigationBarDrawer(displayMode: .automatic),
+                prompt: "Search all chats"
             )
-            .refreshable { app.reconnect() }
-            .navigationTitle(rail.title)
-            // Inline, not large: with a top safe-area inset (the pinned rail)
-            // the large title lays out its space but never draws, which left an
-            // empty band above the search field in the CI screenshot.
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .top, spacing: 0) { projectRail }
             .safeAreaInset(edge: .bottom, spacing: 0) { banners }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        newChatProject = rail.projectName ?? ""
-                        showNewChat = true
+                        searchPresented = true
                     } label: {
-                        Image(systemName: "square.and.pencil")
+                        Image(systemName: "magnifyingglass")
                     }
-                    .accessibilityLabel("New chat")
+                    .accessibilityLabel("Search chats")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        projectEditorTarget = ProjectEditTarget(project: nil)
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("New project")
                 }
             }
             .navigationDestination(for: String.self) { id in
@@ -109,6 +135,9 @@ struct ChatsHomeView: View {
             }
             .navigationDestination(for: TerminalTarget.self) { target in
                 TerminalScreen(target: target)
+            }
+            .navigationDestination(for: ChatScope.self) { scope in
+                ProjectChatsView(scope: scope)
             }
         }
         .sheet(isPresented: $showNewChat) {
@@ -165,7 +194,6 @@ struct ChatsHomeView: View {
         .onChange(of: app.pendingOpenChatId) { _, id in
             guard let id else { return }
             app.pendingOpenChatId = nil
-            rail = .all
             path.append(id)
         }
         .onAppear {
@@ -173,194 +201,228 @@ struct ChatsHomeView: View {
         }
     }
 
-    // MARK: - Rail
+    // MARK: - Panel
 
-    private var projectRail: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    chip(for: .all, dot: groupNeedsYou(.all))
-                    ForEach(app.projects) { project in
-                        chip(for: .project(project.name), dot: groupNeedsYou(.project(project.name)))
-                            .contextMenu {
-                                Button {
-                                    projectEditorTarget = ProjectEditTarget(project: project)
-                                } label: {
-                                    Label("Project settings…", systemImage: "slider.horizontal.3")
-                                }
-                                Button {
-                                    newChatProject = project.name
-                                    showNewChat = true
-                                } label: {
-                                    Label("New chat here", systemImage: "plus.bubble")
-                                }
-                                Button {
-                                    newChatProject = project.name
-                                    path.append(TerminalTarget.new(cwd: project.cwd ?? ""))
-                                } label: {
-                                    Label("Open terminal here", systemImage: "terminal")
-                                }
-                                Divider()
-                                Button(role: .destructive) {
-                                    deleteProjectTarget = project
-                                } label: {
-                                    Label("Delete project…", systemImage: "trash")
-                                }
-                            }
-                    }
-                    chip(for: .chats, dot: groupNeedsYou(.chats))
-                    Button {
-                        projectEditorTarget = ProjectEditTarget(project: nil)
-                    } label: {
-                        Chip(title: "New project", icon: "plus")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("New project")
+    private var panel: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if search.isEmpty {
+                    tiles
+                } else {
+                    searchResults
                 }
-                .padding(.horizontal, ProteusTheme.Space.screen)
-                .padding(.vertical, 8)
             }
-
-            if !summary.isEmpty {
-                Text(summary)
-                    .font(.system(size: 12))
-                    .foregroundStyle(theme.textMeta)
-                    .padding(.horizontal, ProteusTheme.Space.screen)
-                    .padding(.bottom, 8)
-            }
+            .padding(.horizontal, 10)
+            .padding(.top, 12)
+            .padding(.bottom, 28)
         }
-        .background(.ultraThinMaterial)
-        .background(theme.chrome)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(theme.hairline).frame(height: 1)
+        .scrollIndicators(.hidden)
+        .refreshable { app.reconnect() }
+        .background(theme.readingSurface)
+        .clipShape(panelShape)
+        .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+    }
+
+    // MARK: - Tiles
+
+    @ViewBuilder
+    private var tiles: some View {
+        if !pinnedProjects.isEmpty {
+            SectionLabel(text: "Pinned")
+                .padding(.horizontal, 6)
+            projectGrid(pinnedProjects)
+        }
+
+        SectionLabel(text: "Projects")
+            .padding(.horizontal, 6)
+
+        if otherProjects.isEmpty {
+            Text("No projects yet. ＋ makes one.")
+                .font(.system(size: 13))
+                .foregroundStyle(theme.textMeta)
+                .padding(.horizontal, 6)
+                .padding(.bottom, 8)
+        } else {
+            projectGrid(otherProjects)
+        }
+
+        unfiledRow
+    }
+
+    private func projectGrid(_ projects: [ProjectDef]) -> some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(projects) { project in
+                tile(project)
+            }
         }
     }
 
-    private func chip(for selection: RailSelection, dot: StatusDot.Kind?) -> some View {
-        Button {
-            rail = selection
-            collapsed.removeAll()
-        } label: {
-            Chip(title: selection.title, selected: rail == selection, dot: dot)
+    private func tile(_ project: ProjectDef) -> some View {
+        let list = chats(in: project.name)
+        let newest = latest(list)
+        let isPinned = pinned.contains(project.name)
+        return NavigationLink(value: ChatScope.project(project.name)) {
+            ProjectTile(
+                name: project.name,
+                chats: list.count,
+                age: newest.map { RelativeTime.short(iso: $0.updatedAt) } ?? "",
+                lastTitle: newest?.title ?? "",
+                needsYou: needsYou(list),
+                isPinned: isPinned
+            )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(selection.title)
-        .accessibilityAddTraits(rail == selection ? .isSelected : [])
+        .contextMenu { projectMenu(project) }
     }
 
-    /// The most urgent state inside one chip: error > needs you > unread.
-    private func groupNeedsYou(_ selection: RailSelection) -> StatusDot.Kind? {
-        let known = Set(app.projects.map(\.name))
-        let sessions: [SessionInfo]
-        switch selection {
-        case .all:
-            sessions = app.sessions
-        case .project(let name):
-            sessions = app.sessions.filter { $0.project == name }
-        case .chats:
-            sessions = app.sessions.filter { $0.project.isEmpty || !known.contains($0.project) }
+    private var unfiledRow: some View {
+        NavigationLink(value: ChatScope.unfiled) {
+            HStack(spacing: 8) {
+                Text("Unfiled chats")
+                    .font(.system(size: 14))
+                    .foregroundStyle(theme.textSecondary)
+                Spacer(minLength: 0)
+                Text("\(unfiledChats.count)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.textMeta)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.textMeta)
+            }
+            .frame(height: 48)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+            .overlay(alignment: .top) {
+                Rectangle().fill(theme.hairline).frame(height: 1)
+            }
         }
-        if sessions.contains(where: { $0.statusKind == .error }) { return .error }
-        if sessions.contains(where: { $0.statusKind == .waiting }) { return .needsYou }
-        if sessions.contains(where: { app.isUnread($0) }) { return .unread }
-        return nil
+        .buttonStyle(.plain)
+        .padding(.top, 2)
     }
 
-    // MARK: - Sections
+    // MARK: - Search
 
     @ViewBuilder
-    private func section(for group: ChatGroup) -> some View {
-        Section {
-            if group.collapsible, collapsed.contains(group.id) {
-                EmptyView()
-            } else {
-                ForEach(group.sessions) { session in
-                    row(session)
-                }
-            }
-        } header: {
-            header(group)
-        }
-    }
-
-    @ViewBuilder
-    private func header(_ group: ChatGroup) -> some View {
-        if group.collapsible {
-            Button {
-                if collapsed.contains(group.id) {
-                    collapsed.remove(group.id)
-                } else {
-                    collapsed.insert(group.id)
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    SectionLabel(text: group.title, count: group.sessions.count)
-                    Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(theme.textMeta)
-                    Spacer(minLength: 0)
-                }
-                .frame(minHeight: 36)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(collapsed.contains(group.id)
-                ? "Show \(group.sessions.count) older chats"
-                : "Hide older chats")
+    private var searchResults: some View {
+        let listing = app.filteredListing(search: search)
+        let all = listing.projects.flatMap(\.sessions) + listing.chats
+        if all.isEmpty {
+            Text("No matches")
+                .font(.system(size: 13))
+                .foregroundStyle(theme.textMeta)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 20)
         } else {
-            SectionLabel(text: group.title, count: group.sessions.count)
-                .frame(minHeight: 32)
+            VStack(spacing: 0) {
+                ForEach(Array(all.enumerated()), id: \.element.id) { index, session in
+                    searchRow(session, first: index == 0)
+                }
+            }
         }
     }
 
-    private func row(_ session: SessionInfo) -> some View {
+    private func searchRow(_ session: SessionInfo, first: Bool) -> some View {
         NavigationLink(value: session.id) {
-            ChatListRowView(session: session)
+            ChatListRowView(session: session, showsProject: true)
+                .padding(.horizontal, 8)
+                .frame(height: 62)
+                .contentShape(Rectangle())
         }
-        .listRowBackground(Color.clear)
-        .listRowSeparatorTint(theme.hairline)
-        .listRowInsets(EdgeInsets(top: 0, leading: ProteusTheme.Space.screen, bottom: 0, trailing: 12))
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                deleteTarget = session
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-            if session.statusKind == .running || session.statusKind == .waiting {
-                Button {
-                    app.stop(session)
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .tint(.orange)
+        .buttonStyle(.plain)
+        .contextMenu { chatMenu(session) }
+        .overlay(alignment: .top) {
+            if !first {
+                Rectangle()
+                    .fill(theme.hairline)
+                    .frame(height: 1)
+                    .padding(.leading, 26)
             }
         }
-        .contextMenu {
+    }
+
+    // MARK: - Menus
+
+    @ViewBuilder
+    private func chatMenu(_ session: SessionInfo) -> some View {
+        Button {
+            renameTarget = session
+        } label: {
+            Label("Rename", systemImage: "pencil")
+        }
+        Button {
+            path.append(TerminalTarget.new(cwd: session.cwd))
+        } label: {
+            Label("Open terminal here", systemImage: "terminal")
+        }
+        Menu {
+            Button("None") { app.move(session, toProject: "") }
+            ForEach(app.projects) { project in
+                Button(project.name) { app.move(session, toProject: project.name) }
+            }
+        } label: {
+            Label("Move to project", systemImage: "folder")
+        }
+        if session.statusKind == .running || session.statusKind == .waiting {
             Button {
-                renameTarget = session
+                app.stop(session)
             } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            Button {
-                path.append(TerminalTarget.new(cwd: session.cwd))
-            } label: {
-                Label("Open terminal here", systemImage: "terminal")
-            }
-            Menu {
-                Button("None") { app.move(session, toProject: "") }
-                ForEach(app.projects) { project in
-                    Button(project.name) { app.move(session, toProject: project.name) }
-                }
-            } label: {
-                Label("Move to project", systemImage: "folder")
-            }
-            Divider()
-            Button(role: .destructive) {
-                deleteTarget = session
-            } label: {
-                Label("Delete", systemImage: "trash")
+                Label("Stop", systemImage: "stop.fill")
             }
         }
+        Divider()
+        Button(role: .destructive) {
+            deleteTarget = session
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+
+    @ViewBuilder
+    private func projectMenu(_ project: ProjectDef) -> some View {
+        Button {
+            togglePin(project)
+        } label: {
+            Label(pinned.contains(project.name) ? "Unpin" : "Pin",
+                  systemImage: pinned.contains(project.name) ? "pin.slash" : "pin")
+        }
+        Button {
+            newChatProject = project.name
+            showNewChat = true
+        } label: {
+            Label("New chat here", systemImage: "plus.bubble")
+        }
+        Button {
+            path.append(TerminalTarget.new(cwd: project.cwd ?? ""))
+        } label: {
+            Label("Open terminal here", systemImage: "terminal")
+        }
+        Button {
+            projectEditorTarget = ProjectEditTarget(project: project)
+        } label: {
+            Label("Project settings…", systemImage: "slider.horizontal.3")
+        }
+        Divider()
+        Button(role: .destructive) {
+            deleteProjectTarget = project
+        } label: {
+            Label("Delete project…", systemImage: "trash")
+        }
+    }
+
+    private func togglePin(_ project: ProjectDef) {
+        var pins = pinned
+        if let index = pins.firstIndex(of: project.name) {
+            pins.remove(at: index)
+        } else {
+            pins.insert(project.name, at: 0)
+        }
+        if pins.count > PinnedProjects.maximum {
+            pins = Array(pins.prefix(PinnedProjects.maximum))
+        }
+        pinnedRaw = PinnedProjects.encode(pins)
     }
 
     // MARK: - Empty state
@@ -372,24 +434,20 @@ struct ChatsHomeView: View {
                 .opacity(0.9)
 
             if app.hasWorkstation {
-                Text(search.isEmpty ? "No chats here yet" : "No matches")
+                Text("No projects or chats yet")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(theme.textPrimary)
-                Text(search.isEmpty
-                     ? "Start one with the button above. It runs on your workstation, not on this phone."
-                     : "Try a project name, a folder or a model.")
+                Text("Start one with ＋. It runs on your workstation, not on this phone.")
                     .font(.subheadline)
                     .foregroundStyle(theme.textSecondary)
-                if search.isEmpty {
-                    Button {
-                        newChatProject = rail.projectName ?? ""
-                        showNewChat = true
-                    } label: {
-                        Text("New chat")
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .padding(.top, 4)
+                Button {
+                    newChatProject = ""
+                    showNewChat = true
+                } label: {
+                    Text("New chat")
                 }
+                .buttonStyle(PrimaryButtonStyle())
+                .padding(.top, 4)
             } else {
                 // First run on an install that was not launched with
                 // -ProteusDemo: say what the app needs and open the screen that
@@ -443,6 +501,12 @@ struct ChatsHomeView: View {
         switch app.demoScreen {
         case "project":
             projectEditorTarget = ProjectEditTarget(project: app.projects.first)
+        case "unfiled":
+            path.append(ChatScope.unfiled)
+        case "projectchats":
+            if let name = app.projects.first?.name {
+                path.append(ChatScope.project(name))
+            }
         case "agents":
             if let first = app.sessions.first {
                 path.append(first.id)
@@ -453,28 +517,76 @@ struct ChatsHomeView: View {
     }
 }
 
-// MARK: - Rail selection
+// MARK: - Tile
 
-enum RailSelection: Hashable {
-    case all
-    case project(String)
-    case chats
+/// One project tile: name, active chat count with an amber dot when something
+/// needs you, and the last chat's title. 100 pt tall, the whole tile is the
+/// target.
+struct ProjectTile: View {
+    @Environment(\.proteusTheme) private var theme
 
-    var title: String {
-        switch self {
-        case .all: return "All chats"
-        case .project(let name): return name
-        case .chats: return "Chats"
-        }
+    let name: String
+    let chats: Int
+    let age: String
+    let lastTitle: String
+    let needsYou: Bool
+    let isPinned: Bool
+
+    private var countLine: String {
+        if chats == 0 { return "no chats" }
+        let noun = chats == 1 ? "chat" : "chats"
+        return age.isEmpty ? "\(chats) \(noun)" : "\(chats) \(noun) · \(age)"
     }
 
-    var projectName: String? {
-        if case .project(let name) = self { return name }
-        return nil
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(name)
+                    .font(.system(size: 14.5, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.textMeta)
+                }
+            }
+
+            HStack(spacing: 6) {
+                if needsYou {
+                    Circle()
+                        .fill(theme.statusNeedsYou)
+                        .frame(width: 6, height: 6)
+                }
+                Text(countLine)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(theme.textMeta)
+                    .lineLimit(1)
+            }
+            .padding(.top, 3)
+
+            Spacer(minLength: 8)
+
+            Text(chats == 0 ? "no chats yet" : lastTitle)
+                .font(.system(size: 12))
+                .foregroundStyle(theme.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading)
+        .background(theme.cardFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isPinned ? theme.rim : theme.hairline, lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(name), \(countLine)\(needsYou ? ", needs you" : "")")
     }
 }
 
-// MARK: - Row
+// MARK: - Chat row
 
 /// One chat: dot, title, project · model, relative age. 56 pt tall, the whole
 /// row tappable.
@@ -483,18 +595,22 @@ struct ChatListRowView: View {
     @Environment(\.proteusTheme) private var theme
 
     let session: SessionInfo
+    /// Inside a project the project is implied, so only the model is shown.
+    var showsProject: Bool
 
-    init(session: SessionInfo) {
+    init(session: SessionInfo, showsProject: Bool = true) {
         self.session = session
+        self.showsProject = showsProject
     }
 
     private var unread: Bool { app.isUnread(session) }
 
     private var subtitle: String {
+        let model = app.modelLabel(for: session.model)
+        guard showsProject else { return model }
         let place = session.project.isEmpty
             ? ((session.cwd as NSString).lastPathComponent)
             : session.project
-        let model = app.modelLabel(for: session.model)
         if place.isEmpty { return model }
         return model.isEmpty ? place : "\(place) · \(model)"
     }

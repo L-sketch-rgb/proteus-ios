@@ -176,8 +176,8 @@ public enum SchedulePreset: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A custom date row of the time menu: Today, Tomorrow, then the next five
-/// weekdays by name (local time).
+/// A custom date row of the time menu: Today, Tomorrow, then the next seven
+/// days by name, weekends included (local time).
 public struct CustomDateOption: Equatable, Identifiable, Sendable {
     public var date: Date
     public var label: String
@@ -238,7 +238,9 @@ public enum SchedulePresets {
         }
     }
 
-    /// The custom date rows: Today, Tomorrow, then the next five weekdays.
+    /// The custom date rows: Today, Tomorrow, then every following day.
+    /// Weekends are included on purpose (v17-D): a Claude Code limit can reset
+    /// on a Sunday, and a weekday-only list could not express that.
     public static func customDates(now: Date, calendar: Calendar) -> [CustomDateOption] {
         let today = startOfDay(now, calendar: calendar)
         var options = [
@@ -251,16 +253,9 @@ public enum SchedulePresets {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEEE"
 
-        var day = add(days: 2, to: today, calendar: calendar)
-        var weekdays = 0
-        while weekdays < 5 {
-            let weekday = calendar.component(.weekday, from: day)
-            // 1 = Sunday, 7 = Saturday.
-            if weekday != 1 && weekday != 7 {
-                options.append(CustomDateOption(date: day, label: formatter.string(from: day)))
-                weekdays += 1
-            }
-            day = add(days: 1, to: day, calendar: calendar)
+        for day in 2...8 {
+            let date = add(days: day, to: today, calendar: calendar)
+            options.append(CustomDateOption(date: date, label: formatter.string(from: date)))
         }
         return options
     }
