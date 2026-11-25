@@ -175,6 +175,12 @@ jobs:
             --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
 
           mkdir -p screens
+          # Warm the cold-start paths (dyld caches, first-run work) so the first
+          # capture below is not a launch screen.
+          xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo >/dev/null 2>&1 || true
+          sleep 10
+          xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+
           capture() {
             local screen="$1"
             xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -183,9 +189,18 @@ jobs:
             else
               xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo -ProteusDemoScreen="$screen"
             fi
-            # Cold start of a Release build; 5 s caught the launch screen once.
-            sleep 8
-            xcrun simctl io "$DEVICE" screenshot "screens/$screen.png"
+            local attempt bytes=0
+            for attempt in 1 2 3 4 5; do
+              sleep 5
+              xcrun simctl io "$DEVICE" screenshot "screens/$screen.png" >/dev/null 2>&1
+              bytes=$(stat -f%z "screens/$screen.png")
+              # A launch screen is one flat colour and compresses to ~70 KB; every
+              # real screen here is 150 KB or more. Retry instead of shipping a
+              # blank frame (v19: the first capture after install caught one).
+              if [ "$bytes" -ge 120000 ]; then return 0; fi
+            done
+            echo "screens/$screen.png is still blank after $attempt tries ($bytes bytes)" >&2
+            return 1
           }
 
           for screen in chats agents project terminal settings; do
