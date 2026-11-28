@@ -152,6 +152,9 @@ public final class ChatStore {
     /// Canonical rows without group headers, for counts and tool matching.
     private var entries: [ChatRow] = []
     public private(set) var lastSeq: Int = 0
+    /// Index of the oldest loaded history item on the hub (paged history).
+    /// Zero means nothing older exists (or the hub does not page).
+    public private(set) var historyOffset: Int = 0
     public private(set) var sessionId: String?
     /// Latest full task state per task id, from `task` events.
     public private(set) var tasks: [String: TaskData] = [:]
@@ -172,15 +175,20 @@ public final class ChatStore {
     public func reset(sessionId: String? = nil) {
         self.sessionId = sessionId
         rows = []
+        visibleRows = []
         entries = []
         tasks = [:]
         tasksByToolUseId = [:]
         expandedGroups = []
         assistantTurnStarted = []
         lastSeq = 0
+        historyOffset = 0
         rowCounter = 0
         onChange?()
     }
+
+    /// True when the hub holds older history than what is loaded.
+    public var hasOlderHistory: Bool { historyOffset > 0 }
 
     public var runningTaskCount: Int {
         tasks.values.filter(\.isRunning).count
@@ -190,22 +198,39 @@ public final class ChatStore {
     public var entryCount: Int { entries.count }
 
     /// Rows the transcript draws: collapsed group children are omitted.
-    public var visibleRows: [ChatRow] {
-        rows.filter { row in
-            !(row.kind == .tool && !row.groupId.isEmpty && !row.groupExpanded)
-        }
-    }
+    /// Cached: recomputed in `rebuildRows`, patched in place for streaming deltas.
+    public private(set) var visibleRows: [ChatRow] = []
 
     /// Build from `history` items (which carry no seq), then continue from
     /// `lastSeq` with live events.
-    public func applyHistory(_ items: [HistoryItem], lastSeq: Int) {
+    public func applyHistory(_ items: [HistoryItem], lastSeq: Int, offset: Int? = nil) {
         reset(sessionId: sessionId)
+        historyOffset = max(0, offset ?? 0)
         for item in items {
             let parent = item.data["parent"]?.stringValue ?? ""
             // History items carry no seq; pins match them by kind + excerpt.
             applyItem(kind: item.kind, data: item.data, live: false, parent: parent, ts: item.ts, seq: 0)
         }
         self.lastSeq = max(0, lastSeq)
+        rebuildRows()
+        onChange?()
+    }
+
+    /// Prepends an older page (reply to `before`). Folds the items on their
+    /// own, then puts them in front of the rows already held, so live state
+    /// (streaming rows, tool results) is untouched.
+    public func prependHistory(_ items: [HistoryItem], offset: Int) {
+        let saved = entries
+        let savedTurns = assistantTurnStarted
+        entries = []
+        assistantTurnStarted = []
+        for item in items {
+            let parent = item.data["parent"]?.stringValue ?? ""
+            applyItem(kind: item.kind, data: item.data, live: false, parent: parent, ts: item.ts, seq: 0)
+        }
+        entries.append(contentsOf: saved)
+        assistantTurnStarted = savedTurns
+        historyOffset = max(0, offset)
         rebuildRows()
         onChange?()
     }
@@ -218,7 +243,16 @@ public final class ChatStore {
         if sessionId == nil { sessionId = event.id }
         let parent = event.data["parent"]?.stringValue ?? ""
         applyItem(kind: event.kind, data: event.data, live: true, parent: parent, ts: event.ts, seq: event.seq)
-        rebuildRows()
+        // Perf: a streamed delta only grows the last row. Patch it in place
+        // instead of regrouping every entry (O(N) per delta on a long chat).
+        if (event.kind == "text_delta" || event.kind == "thinking_delta"),
+           let last = entries.last, last.streaming,
+           rows.last?.id == last.id, visibleRows.last?.id == last.id {
+            rows[rows.count - 1] = last
+            visibleRows[visibleRows.count - 1] = last
+        } else {
+            rebuildRows()
+        }
         onChange?()
     }
 
@@ -333,6 +367,9 @@ public final class ChatStore {
             index = end
         }
         rows = out
+        visibleRows = out.filter { row in
+            !(row.kind == .tool && !row.groupId.isEmpty && !row.groupExpanded)
+        }
     }
 
     private func makeGroup(children: [ChatRow]) -> ChatRow {

@@ -154,7 +154,19 @@ public final class HubClient {
         perform {
             self.subscriptions.insert(id)
             let seq = since ?? self.lastSeq[id]
-            self.sendLocked(.sessionOpen(id: id, since: seq))
+            self.sendLocked(.sessionOpen(id: id, since: seq, limit: self.historyLimit))
+        }
+    }
+
+    /// Newest-N paging (protocol v11): when set, `session.open` (and a
+    /// reconnect's re-open) asks the hub for only that many history items.
+    public var historyLimit: Int?
+
+    /// Asks for the `limit` history items before `offset` (an earlier
+    /// reply's `offset`). The reply is a `history` frame with `older: true`.
+    public func openOlder(_ id: String, before offset: Int, limit: Int) {
+        perform {
+            self.sendLocked(.sessionOpen(id: id, limit: limit, before: offset))
         }
     }
 
@@ -275,7 +287,7 @@ public final class HubClient {
 
     private func resubscribe() {
         for id in subscriptions.sorted() {
-            sendLocked(.sessionOpen(id: id, since: lastSeq[id]))
+            sendLocked(.sessionOpen(id: id, since: lastSeq[id], limit: historyLimit))
         }
     }
 

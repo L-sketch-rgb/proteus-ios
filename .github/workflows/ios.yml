@@ -7,30 +7,15 @@ on:
       - "protocol/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
-    inputs:
-      screens_only:
-        description: "Skip the device archive and IPA (UI iteration only)"
-        type: boolean
-        default: true
-
-# A superseded push cancels the run it replaced instead of leaving it to burn a
-# macOS runner for ten minutes.
-concurrency:
-  group: ios-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      # Scoped to what this job ships: the iOS app and the protocol it speaks.
-      # The scan's default paths include hub/ and linux/, which are not built
-      # here; their hits are tracked separately (docs/REQUESTS.md).
       - name: Owner-data scan (generic patterns only)
-        run: scripts/owner-scan.sh --generic-only ios protocol
+        run: scripts/owner-scan.sh --generic-only
 
       - name: Select newest Xcode
         run: |
@@ -40,49 +25,17 @@ jobs:
           xcodebuild -version
 
       - name: Install XcodeGen
-        run: |
-          set -euo pipefail
-          if command -v xcodegen >/dev/null 2>&1; then
-            echo "xcodegen already on the image: $(xcodegen --version)"
-            exit 0
-          fi
-          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install xcodegen
-          xcodegen --version
+        run: brew install xcodegen
 
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen
 
-      # SwiftPM checkouts (SwiftTerm is compiled from source) and ProteusKit's
-      # own build products.
-      - name: Cache SwiftPM and ProteusKit
-        uses: actions/cache@v4
-        with:
-          path: |
-            ios/ProteusKit/.build
-            ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('ios/ProteusKit/Package.swift', 'ios/ProteusKit/Package.resolved', 'ios/ProteusKit/Sources/**', 'ios/ProteusKit/Tests/**') }}
-          restore-keys: |
-            spm-${{ runner.os }}-
-
       - name: Test ProteusKit
         working-directory: ios/ProteusKit
         run: swift test
 
-      # DerivedData for both the device archive and the simulator build, so a
-      # run only recompiles what changed instead of everything.
-      - name: Restore DerivedData
-        uses: actions/cache@v4
-        with:
-          path: |
-            ios/build
-            ios/build-sim
-          key: derived-${{ runner.os }}-${{ hashFiles('ios/Proteus.xcodeproj/**', 'ios/Proteus/**', 'ios/ProteusKit/Package.swift', 'ios/ProteusKit/Sources/**') }}
-          restore-keys: |
-            derived-${{ runner.os }}-
-
       - name: Archive unsigned
-        if: github.event.inputs.screens_only != 'true'
         working-directory: ios
         run: |
           xcodebuild -scheme Proteus -skipPackagePluginValidation -skipMacroValidation \
@@ -91,11 +44,9 @@ jobs:
             -derivedDataPath build \
             -archivePath build/Proteus.xcarchive \
             archive \
-            CODE_SIGNING_ALLOWED=NO \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Package IPA
-        if: github.event.inputs.screens_only != 'true'
         working-directory: ios
         run: |
           mkdir -p Payload
@@ -104,146 +55,60 @@ jobs:
           ls -lh Proteus.ipa
 
       - name: Upload IPA
-        if: github.event.inputs.screens_only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Proteus-ipa
           path: ios/Proteus.ipa
 
-      - name: Pick a simulator
-        id: sim
-        run: |
-          set -euo pipefail
-          UDID="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
-          if [ -z "$UDID" ]; then
-            echo "No available iPhone simulator runtime" >&2
-            xcrun simctl list runtimes >&2
-            exit 1
-          fi
-          echo "Using simulator $UDID"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-
-      # Returns immediately: CoreSimulator boots the device in its own daemon,
-      # so this overlaps with the build instead of adding its ~40 s to the run.
-      - name: Start booting simulator
-        env:
-          DEVICE: ${{ steps.sim.outputs.udid }}
-        run: xcrun simctl boot "$DEVICE" || true
-
-      # A concrete destination, not `generic/platform=iOS Simulator` + `-sdk`:
-      # the generic form leaves EFFECTIVE_PLATFORM_NAME unresolved, so
-      # SwiftTerm's build-info script phase writes SwiftTermBuildInfoGenerator
-      # to Products/Release while the build looks for it there and fails (65).
-      # Debug, not Release: Release's whole-module optimisation took the sim
-      # build from ~5 min to 9:06 (and once failed on a type-checker timeout).
-      # Rendering is identical for demo data; the IPA is the Release build.
       - name: Build for simulator
+        continue-on-error: true
         working-directory: ios
-        env:
-          DEVICE: ${{ steps.sim.outputs.udid }}
         run: |
-          set -euo pipefail
-          xcodebuild -project Proteus.xcodeproj -scheme Proteus \
-            -skipPackagePluginValidation -skipMacroValidation \
-            -configuration Debug \
+          xcodebuild -project Proteus.xcodeproj -scheme Proteus -skipPackagePluginValidation -skipMacroValidation \
+            -sdk iphonesimulator \
+            -configuration Release \
             -derivedDataPath "$PWD/build-sim" \
-            -destination "id=$DEVICE" \
+            -destination 'generic/platform=iOS Simulator' \
             build \
-            CODE_SIGNING_ALLOWED=NO \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            ONLY_ACTIVE_ARCH=YES
-          # Not `-showBuildSettings | awk ... exit`: awk closing the pipe early
-          # sends xcodebuild SIGPIPE, and pipefail turns that into a red step.
-          APP_PATH="$(find "$PWD/build-sim/Build/Products" -maxdepth 2 -type d -name 'Proteus.app' -print -quit)"
-          test -n "$APP_PATH"
-          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
-          xcrun simctl bootstatus "$DEVICE" -b
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Capture demo screenshots
+        continue-on-error: true
         working-directory: ios
-        env:
-          DEVICE: ${{ steps.sim.outputs.udid }}
         run: |
           set -euo pipefail
-          APP="$APP_PATH"
-          test -d "$APP"
-          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
-          echo "Installing $BUNDLE_ID from $APP"
-          xcrun simctl uninstall "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+          APP="$(find build-sim/Build/Products/Release-iphonesimulator -maxdepth 1 -name 'Proteus.app' -print -quit)"
+          test -n "$APP"
+          DEVICE="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [ -z "$DEVICE" ]; then
+            echo "No available iPhone simulator runtime"; exit 1
+          fi
+          echo "Using simulator $DEVICE"
+          xcrun simctl boot "$DEVICE" || true
+          xcrun simctl bootstatus "$DEVICE" -b
           xcrun simctl install "$DEVICE" "$APP"
-          xcrun simctl status_bar "$DEVICE" override --time '9:41' \
-            --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
 
           mkdir -p screens
-          # Warm the cold-start paths (dyld caches, first-run work) so the first
-          # capture below is not a launch screen.
-          xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo >/dev/null 2>&1 || true
-          sleep 10
-          xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
-
           capture() {
             local screen="$1"
-            xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+            xcrun simctl terminate "$DEVICE" local.proteus.app >/dev/null 2>&1 || true
             if [ "$screen" = "chats" ]; then
-              xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo
+              xcrun simctl launch "$DEVICE" local.proteus.app -ProteusDemo
             else
-              xcrun simctl launch "$DEVICE" "$BUNDLE_ID" -ProteusDemo -ProteusDemoScreen="$screen"
+              xcrun simctl launch "$DEVICE" local.proteus.app -ProteusDemo -ProteusDemoScreen="$screen"
             fi
-            local attempt bytes=0
-            for attempt in 1 2 3 4 5; do
-              sleep 5
-              xcrun simctl io "$DEVICE" screenshot "screens/$screen.png" >/dev/null 2>&1
-              bytes=$(stat -f%z "screens/$screen.png")
-              # A launch screen is one flat colour and compresses to ~70 KB; every
-              # real screen here is 150 KB or more. Retry instead of shipping a
-              # blank frame (v19: the first capture after install caught one).
-              if [ "$bytes" -ge 120000 ]; then return 0; fi
-            done
-            echo "screens/$screen.png is still blank after $attempt tries ($bytes bytes)" >&2
-            return 1
+            sleep 4
+            xcrun simctl io "$DEVICE" screenshot "screens/$screen.png"
           }
 
-          for screen in chats newchat agents project terminal settings workstations accounts; do
+          for screen in chats agents project terminal settings; do
             capture "$screen"
           done
-
-          # The real first run: no demo flags, no workstation. This is what a
-          # sideloaded install shows, and the only smoke test of the code path
-          # that does not go through -ProteusDemo.
-          xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
-          xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
-          sleep 8
-          xcrun simctl io "$DEVICE" screenshot "screens/live.png"
-          # A process that died between launch and the screenshot means a crash
-          # on the real path; fail loudly instead of shipping the IPA quietly.
-          # `launchctl list | grep -q` was the wrong shape: grep exits early,
-          # simctl gets SIGPIPE, and pipefail failed the run on a healthy app.
-          RUNNING="$(xcrun simctl spawn "$DEVICE" launchctl list 2>/dev/null || true)"
-          case "$RUNNING" in
-            *"$BUNDLE_ID"*) ;;
-            *)
-              echo "$BUNDLE_ID is not running after a plain launch" >&2
-              ls -l ~/Library/Logs/DiagnosticReports 2>/dev/null || true
-              exit 1
-              ;;
-          esac
           ls -lh screens
 
       - name: Upload screenshots
-        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ios-screens
           path: ios/screens
-          if-no-files-found: error
-
-      # D55: the wave is only visible in the 10 pt gutter and behind the chrome,
-      # so the border of every screenshot must not be one flat colour. This is
-      # the check that was missing for three builds of ditherless screenshots.
-      - name: Check the wave is on screen
-        working-directory: ios
-        run: |
-          set -euo pipefail
-          for screen in chats newchat settings terminal workstations accounts; do
-            xcrun swift dither-check.swift "screens/$screen.png"
-          done

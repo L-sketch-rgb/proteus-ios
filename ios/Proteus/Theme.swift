@@ -105,12 +105,10 @@ extension View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius))
     }
 
-    /// The v19 chrome band (docs/design/v19-ios-shell.md §1): the palette's
-    /// chrome colour, not a material, so the wave still reads behind the bar.
-    /// A material would blur the dither into a grey smear.
-    func chromeToolbar(_ theme: ProteusTheme) -> some View {
+    /// Translucent navigation-bar surface (material on every OS).
+    func glassToolbar() -> some View {
         self
-            .toolbarBackground(theme.chrome, for: .navigationBar)
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
     }
 }
@@ -230,9 +228,6 @@ struct ModelMenuButton: View {
     let title: String
     let menu: ModelMenu
     let selected: String
-    /// v19 §2.4: the new-chat screen wants this as one chip in a row, not a
-    /// full-width menu row.
-    var chip: Bool = false
     let onSelect: (String) -> Void
 
     private func display(_ model: ModelInfo, in section: ModelSection, includeProvider: Bool) -> String {
@@ -271,12 +266,8 @@ struct ModelMenuButton: View {
                 }
             }
         } label: {
-            if chip {
-                Chip(title: title, icon: "cpu")
-            } else {
-                Text(title)
-                    .lineLimit(1)
-            }
+            Text(title)
+                .lineLimit(1)
         }
     }
 

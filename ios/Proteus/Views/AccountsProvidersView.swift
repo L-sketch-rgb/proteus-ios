@@ -1,77 +1,68 @@
 import SwiftUI
-import UIKit
+import Foundation
 import ProteusKit
 
-/// Accounts & providers: one card per provider, one row per account.
-///
-/// v19 §4.2 replaced the per-account wall (two full-width usage bars, a status
-/// line, a toggle, sign-in, an API-key field, Save, Clear, Rename, Remove and a
-/// provider tag, all stacked in a `Form`) with: a row you can read, a compact
-/// usage line, and everything that acts on the account behind its `…` menu.
 struct AccountsProvidersView: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(\.proteusTheme) private var theme
 
     @State private var showAddProvider = false
     @State private var addAccountTarget: AccountTarget?
-    @State private var keyTarget: Account?
-    @State private var renameTarget: Account?
-    @State private var removeAccountTarget: Account?
     @State private var deleteProviderTarget: String?
 
-    private var panelShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 20, style: .continuous)
-    }
-
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                if app.providers.isEmpty {
-                    PanelCard("Providers") {
-                        PanelRow(showsChevron: false) {
-                            Text("Nothing reported by the hub yet.")
-                                .font(.system(size: 13))
-                                .foregroundStyle(theme.textSecondary)
-                        }
-                    }
-                }
-
-                ForEach(app.providers, id: \.self) { provider in
-                    providerCard(provider)
-                }
-
-                PanelCard("Add") {
-                    Button {
-                        showAddProvider = true
-                    } label: {
-                        PanelRow(showsChevron: false) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("Add provider")
-                                    .font(.system(size: 14, weight: .medium))
-                            }
-                            .foregroundStyle(theme.accent)
-                        }
-                    }
-                    .buttonStyle(RowButtonStyle())
+        Form {
+            if app.providers.isEmpty {
+                Section {
+                    Text("No accounts reported by the hub.")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 12)
-            .padding(.bottom, 76)
+
+            ForEach(app.providers, id: \.self) { provider in
+                Section {
+                    ForEach(app.accounts(for: provider)) { account in
+                        AccountRow(account: account, isActive: app.isActiveAccount(account))
+                    }
+                    Button {
+                        addAccountTarget = AccountTarget(provider: provider)
+                    } label: {
+                        Label("Add account", systemImage: "person.badge.plus")
+                    }
+                } header: {
+                    HStack {
+                        Text(app.prettyProvider(provider))
+                        Spacer()
+                        Menu {
+                            Button {
+                                addAccountTarget = AccountTarget(provider: provider)
+                            } label: {
+                                Label("Add account", systemImage: "person.badge.plus")
+                            }
+                            Button(role: .destructive) {
+                                deleteProviderTarget = provider
+                            } label: {
+                                Label("Delete provider…", systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("\(app.prettyProvider(provider)) actions")
+                    }
+                }
+            }
         }
-        .scrollIndicators(.hidden)
-        .background(theme.readingSurface)
-        .clipShape(panelShape)
-        .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
-        .screenWave()
         .navigationTitle("Accounts & providers")
         .navigationBarTitleDisplayMode(.inline)
-        .chromeToolbar(theme)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showAddProvider = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add provider")
+            }
+        }
         .sheet(isPresented: $showAddProvider) {
             AddProviderSheet()
         }
@@ -81,31 +72,6 @@ struct AccountsProvidersView: View {
                 providerLabel: app.prettyProvider(target.provider),
                 preset: ProviderPresets.all.first { $0.provider?.id == target.provider }
             )
-        }
-        .sheet(item: $keyTarget) { account in
-            APIKeySheet(account: account)
-        }
-        .sheet(item: $renameTarget) { account in
-            AccountRenameSheet(account: account) { label in
-                app.renameAccount(account, label: label)
-            }
-        }
-        .confirmationDialog(
-            "Remove this account?",
-            isPresented: Binding(
-                get: { removeAccountTarget != nil },
-                set: { if !$0 { removeAccountTarget = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: removeAccountTarget
-        ) { account in
-            Button("Remove \(account.label)", role: .destructive) {
-                app.removeAccount(account)
-                removeAccountTarget = nil
-            }
-            Button("Cancel", role: .cancel) { removeAccountTarget = nil }
-        } message: { _ in
-            Text("Its saved key is deleted from the workstation. Running chats fall back to the active account.")
         }
         .confirmationDialog(
             "Delete this provider?",
@@ -125,266 +91,179 @@ struct AccountsProvidersView: View {
             Text("Its accounts and saved keys are removed from the workstation. Chats keep their transcripts.")
         }
     }
+}
 
-    // MARK: - One provider
+private struct AccountTarget: Identifiable {
+    let provider: String
+    var id: String { provider }
+}
 
-    private func providerCard(_ provider: String) -> some View {
-        let accounts = app.accounts(for: provider)
-        return PanelCard(app.prettyProvider(provider)) {
-            ForEach(accounts) { account in
-                accountRow(account)
+private struct AccountRow: View {
+    @EnvironmentObject private var app: AppModel
 
-                Hairline().padding(.leading, 16)
-            }
+    let account: Account
+    let isActive: Bool
 
-            Button {
-                addAccountTarget = AccountTarget(provider: provider)
-            } label: {
-                PanelRow(showsChevron: false) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "person.badge.plus")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("Add account")
-                            .font(.system(size: 14, weight: .medium))
-                    }
-                    .foregroundStyle(theme.accent)
-                }
-            }
-            .buttonStyle(RowButtonStyle())
+    @State private var key = ""
+    @State private var showRename = false
+    @State private var newLabel = ""
+    @State private var moveRunningNow = false
+    @State private var confirmRemove = false
 
-            Hairline().padding(.leading, 16)
-
-            Button {
-                deleteProviderTarget = provider
-            } label: {
-                PanelRow(showsChevron: false) {
-                    Text("Remove \(app.prettyProvider(provider))…")
-                        .font(.system(size: 13))
-                        .foregroundStyle(theme.statusError)
-                }
-            }
-            .buttonStyle(RowButtonStyle())
-        }
-    }
-
-    private func accountRow(_ account: Account) -> some View {
-        let isActive = app.isActiveAccount(account)
-        return VStack(alignment: .leading, spacing: 0) {
-            Button {
-                if !isActive { app.makeActive(account, now: false) }
-            } label: {
-                PanelRow(showsChevron: false) {
-                    HStack(spacing: 10) {
-                        StatusDot(state: isActive ? .working : .idle, size: 8)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(account.label)
-                                .foregroundStyle(theme.textPrimary)
-                                .lineLimit(1)
-                            Text(subtitle(account))
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(theme.textMeta)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 8)
-                        if let usage = usageLine(account) {
-                            Text(usage)
-                                .font(.system(size: 11.5, design: .monospaced))
-                                .foregroundStyle(theme.textMeta)
-                                .lineLimit(1)
-                        }
-                        if isActive {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 14))
-                                .foregroundStyle(theme.statusWorking)
-                        }
-                    }
-                }
-            }
-            .buttonStyle(RowButtonStyle())
-            .contextMenu {
-                accountMenu(account, isActive: isActive)
-            }
-
-            if let update = loginUpdate(for: account) {
-                HStack(spacing: 6) {
-                    Text(update.message ?? update.status)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(theme.statusNeedsYou)
-                    if let raw = update.url, let url = URL(string: raw) {
-                        Link("Open", destination: url)
-                            .font(.system(size: 11.5, weight: .semibold))
-                    }
-                }
-                .padding(.leading, 34)
-                .padding(.trailing, 16)
-                .padding(.bottom, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func accountMenu(_ account: Account, isActive: Bool) -> some View {
-        if !isActive {
-            Button {
-                app.makeActive(account, now: false)
-            } label: {
-                Label("Use this account", systemImage: "bolt")
-            }
-            if (account.provider ?? "claude") == "claude" {
-                Button {
-                    app.makeActive(account, now: true)
-                } label: {
-                    Label("Use and move running chats", systemImage: "arrow.left.arrow.right")
-                }
-            }
-        }
-        if account.isSubscription {
-            Button {
-                app.login(account)
-            } label: {
-                Label("Sign in", systemImage: "person.crop.circle.badge.checkmark")
-            }
-        } else {
-            Button {
-                keyTarget = account
-            } label: {
-                Label("API key…", systemImage: "key")
-            }
-        }
-        Button {
-            renameTarget = account
-        } label: {
-            Label("Rename…", systemImage: "pencil")
-        }
-        Button(role: .destructive) {
-            removeAccountTarget = account
-        } label: {
-            Label("Remove…", systemImage: "trash")
-        }
-    }
-
-    // MARK: - Bits
-
-    private func subtitle(_ account: Account) -> String {
-        if let email = account.email, !email.isEmpty { return email }
-        if let hint = app.keyHint(for: account) { return "Key stored \(hint)" }
-        return "No key yet"
-    }
-
-    /// "5h 1% · 7d 95%" — one line instead of two full-width bars.
-    private func usageLine(_ account: Account) -> String? {
-        guard let usage = account.usage else { return nil }
-        var parts: [String] = []
-        if let window = usage.fiveHour { parts.append("5h \(Formatting.percent(window))") }
-        if let window = usage.sevenDay { parts.append("7d \(Formatting.percent(window))") }
-        if parts.isEmpty, let status = usage.status, !status.isEmpty { return status }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private func loginUpdate(for account: Account) -> LoginUpdate? {
+    private var loginUpdate: LoginUpdate? {
         guard let update = app.loginUpdate, update.name == account.name else { return nil }
         return update
     }
 
-    // MARK: - Sheets
-
-    private struct AccountTarget: Identifiable {
-        let provider: String
-        var id: String { provider }
-    }
-}
-
-// MARK: - Rename
-
-private struct AccountRenameSheet: View {
-    let account: Account
-    let onSave: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var label = ""
-
     var body: some View {
-        NavigationStack {
-            Form {
-                TextField("Label", text: $label)
-            }
-            .navigationTitle("Rename account")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave(label)
-                        dismiss()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.label)
+                        .font(.body.weight(.medium))
+                    if let email = account.email, !email.isEmpty {
+                        Text(email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .onAppear { if label.isEmpty { label = account.label } }
-        }
-        .presentationDetents([.height(200)])
-    }
-}
-
-// MARK: - API key
-
-/// The key field lives in its own sheet: it is not something to scroll past on
-/// every account.
-private struct APIKeySheet: View {
-    @EnvironmentObject private var app: AppModel
-    @Environment(\.proteusTheme) private var theme
-    @Environment(\.dismiss) private var dismiss
-
-    let account: Account
-
-    @State private var key = ""
-
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(account.label)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(theme.textPrimary)
-
-                if let hint = app.keyHint(for: account) {
-                    Text("A key is already stored (\(hint)). Saving replaces it.")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(theme.textMeta)
-                }
-
-                SecureField("API key", text: $key)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(12)
-                    .background(theme.fieldFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(theme.rim, lineWidth: 1)
+                    if let hint = app.keyHint(for: account) {
+                        Text("Key stored \(hint)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-
-                Spacer(minLength: 0)
-            }
-            .padding(16)
-            .background(theme.readingSurface)
-            .navigationTitle("API key")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
+                Spacer()
+                if isActive {
+                    Label("Active", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Use") {
+                        app.makeActive(account, now: moveRunningNow)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            UsageBar(title: "5 h", window: account.usage?.fiveHour)
+            UsageBar(title: "7 d", window: account.usage?.sevenDay)
+
+            if let status = account.usage?.status, !status.isEmpty {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !isActive, (account.provider ?? "claude") == "claude" {
+                Toggle("Move running sessions now", isOn: $moveRunningNow)
+                    .font(.caption)
+                    .accessibilityHint("When on, chats that are running switch to this account immediately.")
+            }
+
+            if account.isSubscription {
+                Button("Sign in") { app.login(account) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                if let update = loginUpdate {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(update.message ?? update.status)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let raw = update.url, let url = URL(string: raw) {
+                            Link("Open sign-in page", destination: url)
+                                .font(.caption2)
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    SecureField("API key", text: $key)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                     Button("Save") {
                         app.setKey(account, key: key)
-                        dismiss()
+                        key = ""
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if app.keyHint(for: account) != nil {
+                        Button("Clear", role: .destructive) {
+                            app.setKey(account, key: nil)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
             }
+
+            HStack(spacing: 12) {
+                Button("Rename") {
+                    newLabel = account.label
+                    showRename = true
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+
+                Button("Remove", role: .destructive) {
+                    confirmRemove = true
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+
+                Spacer()
+
+                Text(account.provider ?? "claude")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .presentationDetents([.height(280)])
-        .presentationBackground(.ultraThinMaterial)
+        .padding(.vertical, 4)
+        .alert("Rename account", isPresented: $showRename) {
+            TextField("Label", text: $newLabel)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                app.renameAccount(account, label: newLabel)
+            }
+        }
+        .confirmationDialog(
+            "Remove this account?",
+            isPresented: $confirmRemove,
+            titleVisibility: .visible
+        ) {
+            Button("Remove \(account.label)", role: .destructive) {
+                app.removeAccount(account)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its saved key is deleted from the workstation. Running chats fall back to the active account.")
+        }
+    }
+}
+
+private struct UsageBar: View {
+    let title: String
+    let window: UsageWindow?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .leading)
+
+            ProgressView(value: window?.utilization ?? 0)
+                .progressViewStyle(.linear)
+
+            Text(Formatting.percent(window))
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 38, alignment: .trailing)
+        }
+        .opacity(window == nil ? 0.6 : 1)
     }
 }

@@ -19,11 +19,13 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @AppStorage("proteus.palette") private var paletteKey = "blue"
-    @AppStorage("proteus.theme") private var themeRaw = AppTheme.dark.rawValue
+    @AppStorage("proteus.theme") private var themeRaw = AppTheme.system.rawValue
+    @AppStorage("proteus.animatedBackground") private var animatedBackground = true
+    @AppStorage("proteus.backgroundIntensity") private var backgroundIntensity = 0.8
     @AppStorage(TextScale.key) private var textScale = TextScale.default
 
     private var theme: AppTheme {
-        AppTheme(rawValue: themeRaw) ?? .dark
+        AppTheme(rawValue: themeRaw) ?? .system
     }
 
     private var isDark: Bool {
@@ -42,23 +44,17 @@ struct RootView: View {
         palette.mode(dark: isDark).accentColor.color
     }
 
-    /// v18: the desktop's tokens, rebuilt for the current scheme and palette.
-    private var tokens: ProteusTheme {
-        ProteusTheme(isDark: isDark, accent: accent)
-    }
-
     var body: some View {
         ZStack {
-            // Not the wave: it lives inside each tab (see `WaveTab`), because a
-            // tab controller paints its own opaque page background over
-            // anything behind the `TabView`. This is only the colour a launch
-            // shows for the frame before the tabs appear.
-            palette.mode(dark: isDark).background.color
-            ProteusRootView()
+            WaveBackground(
+                palette: palette,
+                animated: animatedBackground,
+                intensity: backgroundIntensity
+            )
+            ChatsView()
         }
         .tint(accent)
         .environment(\.paletteAccent, accent)
-        .environment(\.proteusTheme, tokens)
         .preferredColorScheme(theme.colorScheme)
         .dynamicTypeSize(proteusDynamicTypeSize(percent: textScale))
         .onAppear { app.start() }

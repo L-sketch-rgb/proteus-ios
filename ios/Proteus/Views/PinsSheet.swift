@@ -11,33 +11,13 @@ struct PinsSheet: View {
     /// Called with the pin the user wants to jump to.
     var onSelect: ((Pin) -> Void)? = nil
 
-    /// Inside the Inspector sheet the view supplies its own chrome.
-    var embedded = false
-
     private var pins: [Pin] {
         app.pins(for: chat.id)
     }
 
     var body: some View {
-        if embedded {
-            content
-        } else {
-            NavigationStack {
-                content
-                    .navigationTitle("Pins")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { dismiss() }
-                        }
-                    }
-            }
-            .presentationBackground(.ultraThinMaterial)
-        }
-    }
-
-    private var content: some View {
-        List {
+        NavigationStack {
+            List {
                 if !app.hasFeature("pins") {
                     Text("Pins need a newer hub.")
                         .foregroundStyle(.secondary)
@@ -52,6 +32,15 @@ struct PinsSheet: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            .navigationTitle("Pins")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationBackground(.ultraThinMaterial)
     }
 
     private func row(_ pin: Pin) -> some View {
