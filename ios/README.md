@@ -5,14 +5,16 @@ workstation over the tailnet with `ws://host:port/v1` and speaks protocol v1–v
 
 ## Layout
 
+- `Proteus/Design/` — `Tokens.swift` (the v15/v16 design language as `ProteusTheme`, injected at the root)
+  and `Components.swift` (StatusDot, Chip, IconButton, CardFrame, CardGroup, button styles).
+- `Proteus/` — app target: `ProteusTabs.swift` (Chats · Terminals · Settings), SwiftUI screens, the Metal
+  wave shader, the SwiftTerm wrapper, assets, `Info.plist`.
 - `ProteusKit/` — Swift package with every non-UI piece: frame Codable types, `HubClient`
   (`URLSessionWebSocketTask`, ping, backoff, seq catch-up), session/chat/model/account/task
   stores, the terminal store and input/resize encoding, formatting, token storage
   (`#if canImport(Security)` Keychain, in-memory on Linux), `AppearanceStore` +
-  `PaletteEngine` (v7 custom colours), the bundled `palettes.json`, and the
-  `proteus-probe` executable.
-- `Proteus/` — app target: SwiftUI screens, the Metal wave shader, the SwiftTerm wrapper,
-  assets, `Info.plist`.
+  `PaletteEngine` (v7 custom colours), `SeenStore` (per-device unread), `ChatGroups` and
+  `RelativeTime` (v18 list rules), the bundled `palettes.json`, and the `proteus-probe` executable.
 - `project.yml` — XcodeGen input. SwiftTerm is pinned to exact version **1.20.0**; the
   `.xcodeproj` is generated and is not committed.
 

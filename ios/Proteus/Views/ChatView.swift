@@ -2,45 +2,19 @@ import SwiftUI
 import UIKit
 import ProteusKit
 
-/// Perf: transcript rows must not observe the whole AppModel (any @Published
-/// change would re-evaluate every visible row). They hold it as a plain
-/// reference for actions, and receive this chat's pins as a value.
-private struct AppActionsKey: EnvironmentKey {
-    static let defaultValue: AppModel? = nil
-}
-
-private struct ChatPinsKey: EnvironmentKey {
-    static let defaultValue: [Pin] = []
-}
-
-extension EnvironmentValues {
-    var appActions: AppModel? {
-        get { self[AppActionsKey.self] }
-        set { self[AppActionsKey.self] = newValue }
-    }
-    var chatPins: [Pin] {
-        get { self[ChatPinsKey.self] }
-        set { self[ChatPinsKey.self] = newValue }
-    }
-}
-
 struct ChatView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.proteusTheme) private var theme
     @ObservedObject var chat: ChatSessionModel
     @AppStorage("proteus.palette") private var paletteKey = "blue"
     @Environment(\.paletteAccent) private var accent
 
     @State private var atBottom = true
     @State private var didInitialScroll = false
-    /// Perf: only the newest `windowSize` rows are laid out; older ones page
-    /// in when the user scrolls to the top (or a pin/agent needs one).
-    @State private var windowSize = 120
-    @State private var autoLoadArmed = false
-    @State private var showAgents = false
-    @State private var showTerminal = false
+    @State private var showInspector = false
+    @State private var inspectorTab: InspectorTab = .agents
     @State private var showFiles = false
-    @State private var showPins = false
     /// v10 §13: the row a pin scrolled to, briefly outlined.
     @State private var highlightRowId: String?
     @State private var highlightOpacity: Double = 0
@@ -48,6 +22,9 @@ struct ChatView: View {
     @State private var deleteTarget: SessionInfo?
     @State private var showMoveDialog = false
     @State private var scrollTargetId: String?
+    /// Latest row frames, so a content change only re-anchors when the anchor
+    /// has really left the viewport (D58).
+    @State private var rowFrames: [String: CGRect] = [:]
     @State private var didOpenDemoAgents = false
     /// v10 §12: first visible row and the count of rows added since scrolling up.
     @State private var anchorRowId: String?
@@ -84,6 +61,7 @@ struct ChatView: View {
     var body: some View {
         GeometryReader { outer in
             VStack(spacing: 0) {
+                chatHeaderStrip
                 if let error = app.errorText {
                     ErrorBanner(text: error) { app.errorText = nil }
                 }
@@ -128,72 +106,37 @@ struct ChatView: View {
         }
         .navigationTitle(chat.title)
         .navigationBarTitleDisplayMode(.inline)
-        .glassToolbar()
+        .screenWave()
+        .chromeToolbar(theme)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    ForEach(Self.modeOptions) { option in
-                        Button {
-                            app.setMode(option.id)
-                        } label: {
-                            Text((currentMode == option.id ? "✓ " : "") + option.label)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "shield.lefthalf.filled")
-                        Text(modeLabel)
-                    }
-                    .font(.caption.weight(.medium))
-                }
-                .accessibilityLabel("Permission mode, \(modeLabel)")
-            }
             ToolbarItem(placement: .principal) {
-                ModelMenuButton(
-                    title: app.modelLabel(for: selectedModel),
-                    menu: app.modelMenu,
-                    selected: selectedModel,
-                    onSelect: { app.setModel($0) }
-                )
-                .font(.subheadline.weight(.medium))
-                .frame(maxWidth: 170)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                // v10 §13: the pins sheet, with a count like the Agents panel.
-                Button {
-                    showPins = true
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "pin")
-                        let count = app.pins(for: chat.id).count
-                        if count > 0 {
-                            Text("\(count)")
-                                .font(.caption2.weight(.bold))
-                        }
+                VStack(spacing: 0) {
+                    Text(chat.title.isEmpty ? "Chat" : chat.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    if let project = chat.session?.project, !project.isEmpty {
+                        Text(project)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
-                .disabled(!app.hasFeature("pins"))
-                .accessibilityHint(app.hasFeature("pins") ? "" : "Needs a newer hub")
-                .accessibilityLabel("Pins")
+                .frame(maxWidth: 220)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        showAgents = true
-                    } label: {
-                        Label(chatsRunningLabel, systemImage: "gearshape.2")
-                    }
                     Button {
                         showFiles = true
                     } label: {
-                        Label("Show files", systemImage: "folder")
+                        Label("Files", systemImage: "folder")
                     }
                     .disabled(!app.hasFeature("fs"))
                     .accessibilityHint(app.hasFeature("fs") ? "" : "Needs a newer hub")
                     Button {
-                        showTerminal = true
+                        showInspector = true
+                        inspectorTab = .terminal
                     } label: {
-                        Label("Open terminal here", systemImage: "terminal")
+                        Label("New terminal here", systemImage: "terminal")
                     }
                     Divider()
                     Button {
@@ -223,34 +166,28 @@ struct ChatView: View {
                 .accessibilityLabel("Chat actions")
             }
         }
-        .sheet(isPresented: $showAgents) {
-            AgentsSheet(chat: chat) { task in
-                let target = rowId(for: task)
-                showAgents = false
-                guard let target else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    scrollTargetId = target
-                }
-            }
-        }
-        .sheet(isPresented: $showTerminal) {
-            NavigationStack {
-                TerminalScreen(target: .new(cwd: chat.session?.cwd ?? ""))
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showTerminal = false }
-                        }
+        .sheet(isPresented: $showInspector) {
+            InspectorSheet(
+                chat: chat,
+                tab: $inspectorTab,
+                onAgent: { task in
+                    let target = rowId(for: task)
+                    showInspector = false
+                    guard let target else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        scrollTargetId = target
                     }
-            }
+                },
+                onPin: { pin in
+                    showInspector = false
+                    selectPin(pin)
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showFiles) {
             FilesPanelView(chat: chat)
-        }
-        .sheet(isPresented: $showPins) {
-            PinsSheet(chat: chat) { pin in
-                showPins = false
-                selectPin(pin)
-            }
         }
         .sheet(item: $renameTarget) { session in
             RenameChatSheet(session: session)
@@ -285,18 +222,26 @@ struct ChatView: View {
         .onAppear {
             app.attach(chat)
             app.openSession(chat.id)
+            // v18 §3.5a: this chat counts as seen while it is open.
+            app.markSeen(chat.id)
             if app.isDemo, app.demoScreen == "agents", !didOpenDemoAgents {
                 didOpenDemoAgents = true
                 DispatchQueue.main.async {
-                    showAgents = true
+                    inspectorTab = .agents
+                    showInspector = true
                 }
             }
         }
         .onDisappear {
             app.detach(chat)
+            app.markSeen(chat.id)
             if app.removedChatId != chat.id {
                 app.closeSession(chat.id)
             }
+        }
+        .onChange(of: chat.session?.updatedAt) { _, _ in
+            // Streaming keeps the row read without leaving the chat.
+            app.markSeen(chat.id)
         }
         .onChange(of: app.removedChatId) { _, id in
             if id == chat.id {
@@ -307,6 +252,79 @@ struct ChatView: View {
 
     private var chatsRunningLabel: String {
         chat.runningTasks > 0 ? "Agents (\(chat.runningTasks) running)" : "Agents"
+    }
+
+    /// v18 §5.1: the desktop's header strip, phone-sized. One control for model
+    /// and mode, one for the inspector; everything rare stays in ⋯.
+    private var chatHeaderStrip: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Section("Mode") {
+                    ForEach(Self.modeOptions) { option in
+                        Button {
+                            app.setMode(option.id)
+                        } label: {
+                            Text((currentMode == option.id ? "✓ " : "") + option.label)
+                        }
+                    }
+                }
+                ForEach(app.modelMenu.sections) { section in
+                    Section(section.title) {
+                        ForEach(section.models) { model in
+                            Button {
+                                app.setModel(model.id)
+                            } label: {
+                                Text((model.id == selectedModel ? "✓ " : "") + model.label)
+                            }
+                        }
+                    }
+                }
+                if !app.modelMenu.more.isEmpty {
+                    Section("More") {
+                        ForEach(app.modelMenu.more) { section in
+                            ForEach(section.models) { model in
+                                Button {
+                                    app.setModel(model.id)
+                                } label: {
+                                    Text("\(section.title) · \(model.label)")
+                                }
+                                .disabled(!model.available)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Chip(
+                    title: "\(app.modelLabel(for: selectedModel)) · \(modeLabel)",
+                    icon: "shield.lefthalf.filled"
+                )
+            }
+            .accessibilityLabel("Model and mode: \(app.modelLabel(for: selectedModel)), \(modeLabel)")
+
+            Button {
+                if chat.runningTasks > 0 { inspectorTab = .agents }
+                showInspector = true
+            } label: {
+                Chip(
+                    title: "Inspector",
+                    dot: chat.runningTasks > 0 ? .working : nil,
+                    icon: "sidebar.right"
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Inspector")
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, ProteusTheme.Space.gutter)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .background(theme.chrome)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 1)
+        }
     }
 
     private var modelUnavailableNotice: some View {
@@ -340,24 +358,7 @@ struct ChatView: View {
                         EmptyChatHero(paletteKey: paletteKey)
                     }
 
-                    if chat.rows.count > windowSize || chat.hasOlderHistory {
-                        Button {
-                            loadEarlier(proxy: proxy)
-                        } label: {
-                            Label("Load earlier messages", systemImage: "arrow.up.circle")
-                                .font(.caption)
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .onAppear {
-                            // Only when the user scrolled up to it, not on the
-                            // initial layout before we jump to the bottom.
-                            if autoLoadArmed && !atBottom { loadEarlier(proxy: proxy) }
-                        }
-                    }
-
-                    ForEach(chat.rows.suffix(windowSize)) { row in
+                    ForEach(chat.rows) { row in
                         if !(row.kind == .tool && !row.groupId.isEmpty && !row.groupExpanded) {
                             ChatRowView(row: row, chat: chat)
                                 .id(row.id)
@@ -397,8 +398,6 @@ struct ChatView: View {
                 .padding(.bottom, 8)
             }
             .coordinateSpace(name: "chatScroll")
-            .environment(\.appActions, app)
-            .environment(\.chatPins, app.pins(for: chat.id))
             .onPreferenceChange(BottomVisibleKey.self) { visible in
                 if visible != atBottom {
                     atBottom = visible
@@ -414,6 +413,7 @@ struct ChatView: View {
             .onPreferenceChange(RowFrameKey.self) { frames in
                 // v10 §12: the first row at least partly inside the viewport is
                 // the anchor. Only tracked while scrolled up.
+                rowFrames = frames
                 guard !atBottom else { return }
                 let visible = frames.filter { entry in
                     entry.value.maxY > 1 && entry.value.minY < outer.size.height
@@ -435,19 +435,18 @@ struct ChatView: View {
             .onChange(of: chat.rows.count) { _, _ in
                 // A structural change (a tool group expanding, new cards) can
                 // move the content while scrolled up. Anchor the first visible
-                // row again after layout.
+                // row again *only if it actually left the viewport* — the old
+                // unconditional scrollTo yanked the transcript back up whenever
+                // a row appeared, which is what made scrolling down feel broken.
                 guard !atBottom, let anchorRowId else { return }
+                guard rowFrames[anchorRowId].map({ $0.maxY <= 0 }) ?? true else { return }
                 DispatchQueue.main.async {
                     proxy.scrollTo(anchorRowId, anchor: .top)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: scrollTargetId) { _, id in
                 guard let id else { return }
-                // The target may sit above the loaded window.
-                if let index = chat.rows.firstIndex(where: { $0.id == id }),
-                   index < chat.rows.count - windowSize {
-                    windowSize = chat.rows.count - index + 20
-                }
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(id, anchor: .center)
                 }
@@ -465,7 +464,6 @@ struct ChatView: View {
             .onAppear {
                 guard !didInitialScroll else { return }
                 didInitialScroll = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { autoLoadArmed = true }
                 // v10 §12: coming back to a chat restores where it was left
                 // (per chat, in memory); otherwise follow the bottom.
                 if let anchor = chat.scrollAnchorId, !chat.scrollAtBottom {
@@ -519,21 +517,6 @@ struct ChatView: View {
         }
     }
 
-    /// Pages in 120 older rows and keeps the current top row in place.
-    private func loadEarlier(proxy: ScrollViewProxy) {
-        guard chat.rows.count > windowSize || chat.hasOlderHistory else { return }
-        let keep = chat.rows.suffix(windowSize).first?.id
-        let previousWindow = windowSize
-        windowSize += 120
-        if chat.rows.count <= previousWindow {
-            // Everything held is shown: fetch the next page from the hub.
-            app.loadOlderHistory(chat)
-        }
-        if let keep {
-            DispatchQueue.main.async { proxy.scrollTo(keep, anchor: .top) }
-        }
-    }
-
     /// v10 §13: close the pins sheet, expand a collapsed group if needed and
     /// scroll to the pinned row. The chat already holds the full history on
     /// iOS, so there is no older page to load.
@@ -574,9 +557,9 @@ struct ChatView: View {
 }
 
 private struct BottomVisibleKey: PreferenceKey {
-    static var defaultValue: Bool = false
+    static var defaultValue: Bool = true
     static func reduce(value: inout Bool, nextValue: () -> Bool) {
-        value = value || nextValue()
+        value = nextValue()
     }
 }
 
@@ -609,9 +592,7 @@ private struct EmptyChatHero: View {
 // MARK: - Rows
 
 struct ChatRowView: View {
-    @Environment(\.appActions) private var appActions
-    @Environment(\.chatPins) private var chatPins
-    private var app: AppModel { appActions! }
+    @EnvironmentObject private var app: AppModel
     @Environment(\.paletteAccent) private var accent
 
     let row: ChatRow
@@ -631,7 +612,7 @@ struct ChatRowView: View {
                     MarkdownText(text: row.text)
                     // v10 §3/§13: the assistant's time once per turn, with a
                     // filled pin whenever this row is pinned.
-                    let pinned = AppModel.pin(in: chatPins, for: row) != nil
+                    let pinned = app.pin(for: row, chatId: chat.id) != nil
                     if pinned || !row.timestamp.isEmpty {
                         HStack(spacing: 6) {
                             if pinned { PinnedBadge() }
@@ -722,7 +703,7 @@ struct ChatRowView: View {
                     }
                     HStack(spacing: 6) {
                         // v10 §13: a pinned row keeps a small filled pin.
-                        if AppModel.pin(in: chatPins, for: row) != nil {
+                        if app.pin(for: row, chatId: chat.id) != nil {
                             PinnedBadge()
                         }
                         // v10 §11: the original stays in place, marked as edited.
@@ -769,14 +750,12 @@ struct ChatRowView: View {
 
 /// v10 §13: the Pin / Unpin action shared by every pinnable row's menu.
 struct PinMenuButton: View {
-    @Environment(\.appActions) private var appActions
-    @Environment(\.chatPins) private var chatPins
-    private var app: AppModel { appActions! }
+    @EnvironmentObject private var app: AppModel
     let row: ChatRow
     let chatId: String
 
     private var pinned: Pin? {
-        AppModel.pin(in: chatPins, for: row)
+        app.pin(for: row, chatId: chatId)
     }
 
     var body: some View {
@@ -804,9 +783,7 @@ struct PinnedBadge: View {
 
 /// v10 §2: one flat row for a run of tool cards. Tap to expand the cards.
 struct ToolGroupRowView: View {
-    @Environment(\.appActions) private var appActions
-    @Environment(\.chatPins) private var chatPins
-    private var app: AppModel { appActions! }
+    @EnvironmentObject private var app: AppModel
     let row: ChatRow
     let chat: ChatSessionModel
 
@@ -822,7 +799,7 @@ struct ToolGroupRowView: View {
                     Text("\(row.groupCount) \(row.groupLabel)")
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 6)
-                    if AppModel.pin(in: chatPins, for: row) != nil {
+                    if app.pin(for: row, chatId: chat.id) != nil {
                         PinnedBadge()
                     }
                     if !row.groupSpan.isEmpty {
@@ -941,26 +918,48 @@ struct NoticeRowView: View {
 
 // MARK: - Markdown
 
-/// Parsed blocks, cached per text so a body re-evaluation (scroll, any
-/// @Published change) does not re-parse the same message.
-private final class MarkdownBlocksBox {
-    let blocks: [MarkdownBlock]
-    init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
+struct MarkdownSegment: Identifiable {
+    let id: Int
+    let text: String
+    let isCode: Bool
+    let language: String?
 }
 
-private enum MarkdownCache {
-    static let cache: NSCache<NSString, MarkdownBlocksBox> = {
-        let cache = NSCache<NSString, MarkdownBlocksBox>()
-        cache.totalCostLimit = 4_000_000
-        return cache
-    }()
+func parseMarkdownSegments(_ text: String) -> [MarkdownSegment] {
+    var segments: [(text: String, isCode: Bool, language: String?)] = []
+    var current: [String] = []
+    var inCode = false
+    var language: String?
 
-    static func blocks(for text: String) -> [MarkdownBlock] {
-        let key = text as NSString
-        if let hit = cache.object(forKey: key) { return hit.blocks }
-        let parsed = MarkdownBlocks.parse(text)
-        cache.setObject(MarkdownBlocksBox(parsed), forKey: key, cost: text.utf8.count)
-        return parsed
+    func flush() {
+        guard !current.isEmpty else { return }
+        let joined = current.joined(separator: "\n")
+        if !joined.isEmpty {
+            segments.append((joined, inCode, language))
+        }
+        current = []
+    }
+
+    for line in text.components(separatedBy: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("```") {
+            flush()
+            if inCode {
+                inCode = false
+                language = nil
+            } else {
+                inCode = true
+                let tag = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                language = tag.isEmpty ? nil : tag
+            }
+        } else {
+            current.append(line)
+        }
+    }
+    flush()
+
+    return segments.enumerated().map { index, segment in
+        MarkdownSegment(id: index, text: segment.text, isCode: segment.isCode, language: segment.language)
     }
 }
 
@@ -968,126 +967,27 @@ struct MarkdownText: View {
     @Environment(\.colorScheme) private var colorScheme
     let text: String
 
+    private var segments: [MarkdownSegment] {
+        parseMarkdownSegments(text)
+    }
+
     var body: some View {
-        let blocks = MarkdownCache.blocks(for: text)
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func blockView(_ block: MarkdownBlock) -> some View {
-        switch block {
-        case let .heading(level, text):
-            Text(Self.styled(text))
-                .font(Self.headingFont(level))
-                .fontWeight(.semibold)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-        case let .paragraph(text):
-            Text(Self.styled(text))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case let .list(items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(item.marker)
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 14, alignment: .trailing)
-                        Text(Self.styled(item.text))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.leading, CGFloat(item.indent) * 16)
+            ForEach(segments) { segment in
+                if segment.isCode {
+                    CodeBlock(text: segment.text, language: segment.language, isDark: colorScheme == .dark)
+                } else {
+                    Text(attributed(segment.text))
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-        case let .code(language, text):
-            CodeBlock(text: text, language: language, isDark: colorScheme == .dark)
-        case let .table(header, rows):
-            MarkdownTable(header: header, rows: rows, isDark: colorScheme == .dark)
-        case let .quote(text):
-            HStack(alignment: .top, spacing: 8) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.secondary.opacity(0.5))
-                    .frame(width: 3)
-                Text(Self.styled(text))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-        case .rule:
-            Divider()
         }
     }
 
-    private static func headingFont(_ level: Int) -> Font {
-        switch level {
-        case 1: return .title2
-        case 2: return .title3
-        case 3: return .headline
-        default: return .subheadline
-        }
-    }
-
-    /// Inline markup with inline code in a monospaced face.
-    static func styled(_ string: String) -> AttributedString {
-        var attributed = MarkdownBlocks.inline(string)
-        for run in attributed.runs {
-            if let intent = run.inlinePresentationIntent, intent.contains(.code) {
-                attributed[run.range].font = .system(.callout, design: .monospaced)
-            }
-        }
-        return attributed
-    }
-}
-
-private struct MarkdownTable: View {
-    let header: [String]
-    let rows: [[String]]
-    let isDark: Bool
-
-    private var columns: Int {
-        max(header.count, rows.map(\.count).max() ?? 0)
-    }
-
-    private func cell(_ row: [String], _ column: Int) -> String {
-        column < row.count ? row[column] : ""
-    }
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 6) {
-                GridRow {
-                    ForEach(0..<columns, id: \.self) { column in
-                        Text(MarkdownText.styled(cell(header, column)))
-                            .font(.callout.weight(.semibold))
-                            .frame(maxWidth: 260, alignment: .leading)
-                    }
-                }
-                Divider().gridCellColumns(max(columns, 1))
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    GridRow {
-                        ForEach(0..<columns, id: \.self) { column in
-                            Text(MarkdownText.styled(cell(row, column)))
-                                .font(.callout)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: 260, alignment: .leading)
-                        }
-                    }
-                }
-            }
-            .padding(10)
-        }
-        .background(
-            Color.black.opacity(isDark ? 0.25 : 0.04),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
+    private func attributed(_ string: String) -> AttributedString {
+        (try? AttributedString(markdown: string)) ?? AttributedString(string)
     }
 }
 
@@ -1155,9 +1055,7 @@ private struct ThinkingRow: View {
 // MARK: - Tool cards
 
 struct ToolCardView: View {
-    @Environment(\.appActions) private var appActions
-    @Environment(\.chatPins) private var chatPins
-    private var app: AppModel { appActions! }
+    @EnvironmentObject private var app: AppModel
     @State private var expanded = false
     let row: ChatRow
     let chat: ChatSessionModel
@@ -1204,7 +1102,7 @@ struct ToolCardView: View {
                     Text(row.toolName?.isEmpty == false ? row.toolName! : "Tool")
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 6)
-                    if AppModel.pin(in: chatPins, for: row) != nil {
+                    if app.pin(for: row, chatId: chat.id) != nil {
                         PinnedBadge()
                     }
                     // v10 §3: tool cards carry their start time.
@@ -1296,12 +1194,13 @@ struct TaskLiveLine: View {
                 if let time = timeText(now: context.date) {
                     Text(time)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
-                if let tokens = task.tokens, tokens > 0 {
-                    Text(Formatting.tokens(tokens))
-                        .monospacedDigit()
-                }
-                if let tools = task.toolUses, tools > 0 {
+                Text(Formatting.tokens(task.tokens))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                if let tools = task.toolUses {
                     Text("\(tools) tools")
                 }
                 if let last = task.lastTool, !last.isEmpty, task.isRunning {
@@ -1317,8 +1216,10 @@ struct TaskLiveLine: View {
 
     private func timeText(now: Date) -> String? {
         if task.isRunning {
-            let start = Formatting.timestamp(task.startedAt)
-            guard !start.isEmpty else { return nil }
+            // v10 §3 says "started 09:12": the clock alone. The full
+            // timestamp ("Mon, Nov 9, 10:28 AM") is too wide for a phone row
+            // and wrapped into the tokens and tools beside it.
+            guard let start = clockText(task.startedAt) else { return nil }
             if let seconds = Formatting.elapsedSeconds(sinceISO: task.startedAt, now: now) {
                 return "started \(start) · \(Formatting.duration(seconds: seconds))"
             }
@@ -1330,6 +1231,12 @@ struct TaskLiveLine: View {
         }
         let started = Formatting.timestamp(task.startedAt)
         return started.isEmpty ? nil : "started \(started)"
+    }
+
+    /// Locale's short time for an ISO date, no day: `10:28 AM`.
+    private func clockText(_ iso: String) -> String? {
+        guard let date = Formatting.parseISO(iso) else { return nil }
+        return date.formatted(date: .omitted, time: .shortened)
     }
 
     private var statusIcon: String {

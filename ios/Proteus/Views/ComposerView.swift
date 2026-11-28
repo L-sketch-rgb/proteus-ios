@@ -1,6 +1,5 @@
 import SwiftUI
 import PhotosUI
-import ImageIO
 import UIKit
 import ProteusKit
 
@@ -9,12 +8,9 @@ struct ComposerView: View {
     @Environment(\.paletteAccent) private var accent
     @ObservedObject var chat: ChatSessionModel
 
-    /// Photos picked in the system picker, drained into `attachments`.
-    @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var attachments: [PhotoAttachment] = []
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var attachment: ImageIn?
     @State private var isLoadingImage = false
-
-    private static let maxPhotos = 10
     @State private var showSchedule = false
     @State private var scheduledText = ""
     @State private var showModelPicker = false
@@ -39,7 +35,7 @@ struct ComposerView: View {
     }
 
     private var canSend: Bool {
-        !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+        !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachment != nil
     }
 
     /// v10 §1: the Proteus command the composer text is prefixed with, when it
@@ -83,8 +79,21 @@ struct ComposerView: View {
                 }
             }
 
-            if isLoadingImage || !attachments.isEmpty {
-                attachmentStrip
+            if isLoadingImage {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Preparing photo…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(8)
+                .glassCard(cornerRadius: 12)
+            } else if let attachment,
+                      let data = Data(base64Encoded: attachment.data),
+                      let image = UIImage(data: data) {
+                attachmentPreview(image: image)
             }
 
             if let prefix = commandPrefix {
@@ -111,20 +120,13 @@ struct ComposerView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(
-                    selection: $pickerItems,
-                    maxSelectionCount: max(1, Self.maxPhotos - attachments.count),
-                    selectionBehavior: .ordered,
-                    matching: .any(of: [.images]),
-                    photoLibrary: .shared()
-                ) {
+                PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
                     Image(systemName: "photo")
                         .font(.system(size: 20))
                         .foregroundStyle(.secondary)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 44, height: 44)
                 }
-                .disabled(attachments.count >= Self.maxPhotos)
-                .accessibilityLabel("Attach photos")
+                .accessibilityLabel("Attach photo")
 
                 TextField("Message", text: text, axis: .vertical)
                     .lineLimit(1...6)
@@ -136,8 +138,9 @@ struct ComposerView: View {
                         app.interrupt()
                     } label: {
                         Image(systemName: "stop.circle.fill")
-                            .font(.system(size: 27))
+                            .font(.system(size: 28))
                             .foregroundStyle(.orange)
+                            .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Stop")
@@ -149,6 +152,7 @@ struct ComposerView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 28))
                         .foregroundStyle(canSend ? accent : Color.secondary.opacity(0.5))
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
@@ -164,11 +168,11 @@ struct ComposerView: View {
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .glassCard(cornerRadius: 22)
+            .padding(.vertical, 4)
+            .glassCard(cornerRadius: ProteusTheme.Radius.composer)
         }
         .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.bottom, 10)
         .onDisappear {
             // Chat switch, navigation pop: send the pending draft at once.
             app.flushDraft(for: chat.id)
@@ -226,43 +230,20 @@ struct ComposerView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .onChange(of: app.pendingComposerImages[chat.id]?.count ?? 0) { _, _ in
-            takeFileImages()
-        }
-        .onAppear { takeFileImages() }
-        .onChange(of: pickerItems) { _, items in
-            guard !items.isEmpty else { return }
-            pickerItems = []
-            loadPhotos(items)
-        }
-    }
-
-    /// Images attached from the file browser (hub `fs.read` image data).
-    private func takeFileImages() {
-        guard let images = app.pendingComposerImages[chat.id], !images.isEmpty else { return }
-        app.pendingComposerImages[chat.id] = nil
-        for image in images where attachments.count < Self.maxPhotos {
-            guard let data = Data(base64Encoded: image.data),
-                  let photo = ImageDownsampler.process(data: data) else { continue }
-            attachments.append(photo)
-        }
-    }
-
-    /// Load picked photos one at a time (so only one full-size image is in
-    /// memory), downscale each, and append it to the strip.
-    private func loadPhotos(_ items: [PhotosPickerItem]) {
-        isLoadingImage = true
-        Task { @MainActor in
-            defer { isLoadingImage = false }
-            for item in items where attachments.count < Self.maxPhotos {
-                guard let data = try? await item.loadTransferable(type: Data.self),
-                      let photo = await Task.detached(priority: .userInitiated, operation: {
-                          ImageDownsampler.process(data: data)
-                      }).value else {
-                    app.errorText = "Could not read that photo."
-                    continue
+        .onChange(of: pickerItem) { _, item in
+            guard let item else { return }
+            isLoadingImage = true
+            Task { @MainActor in
+                defer {
+                    isLoadingImage = false
+                    pickerItem = nil
                 }
-                attachments.append(photo)
+                guard let data = try? await item.loadTransferable(type: Data.self),
+                      let base64 = ImageDownsampler.jpegBase64(data: data) else {
+                    app.errorText = "Could not read that photo."
+                    return
+                }
+                attachment = ImageIn(mediaType: "image/jpeg", data: base64)
             }
         }
     }
@@ -277,10 +258,10 @@ struct ComposerView: View {
         }
         // Engine commands and ordinary prompts are sent unchanged.
         guard canSend else { return }
-        let images = attachments.map(\.image)
+        let images = attachment.map { [$0] } ?? []
         app.sendMessage(text: raw, images: images)
         app.discardDraft(for: chat.id)
-        attachments = []
+        attachment = nil
     }
 
     private func handleProteus(_ command: String, argument: String) {
@@ -406,91 +387,62 @@ struct ComposerView: View {
         }?.id
     }
 
-    private var attachmentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(attachments) { photo in
-                    ZStack(alignment: .topTrailing) {
-                        Image(uiImage: photo.thumbnail)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        Button {
-                            attachments.removeAll { $0.id == photo.id }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 20))
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, Color.black.opacity(0.65))
-                        }
-                        .buttonStyle(.plain)
-                        .offset(x: 6, y: -6)
-                        .accessibilityLabel("Remove photo")
-                    }
-                    .padding(.top, 6)
-                    .padding(.trailing, 6)
-                }
-                if isLoadingImage {
-                    ProgressView()
-                        .frame(width: 64, height: 64)
-                }
+    private func attachmentPreview(image: UIImage) -> some View {
+        HStack(spacing: 10) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 46, height: 46)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Text("Photo attached")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                attachment = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
-            .padding(8)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove photo")
         }
+        .padding(8)
         .glassCard(cornerRadius: 12)
     }
 }
 
-/// One photo ready to send, with a small thumbnail for the strip.
-struct PhotoAttachment: Identifiable, @unchecked Sendable {
-    let id = UUID()
-    let image: ImageIn
-    let thumbnail: UIImage
-}
-
 enum ImageDownsampler {
-    /// Decode straight to a small bitmap with ImageIO (never the full-size
-    /// image), then JPEG + base64. Longest side at most 1600 px, quality 0.8.
-    static func process(data: Data, maxDimension: CGFloat = 1600, quality: CGFloat = 0.8) -> PhotoAttachment? {
-        guard let jpeg = jpegData(data: data, maxDimension: maxDimension, quality: quality),
-              let thumb = thumbnail(data: data, maxDimension: 160) else { return nil }
-        return PhotoAttachment(
-            image: ImageIn(mediaType: "image/jpeg", data: jpeg.base64EncodedString()),
-            thumbnail: thumb
+    /// JPEG + base64, longest side at most 1600 px, quality 0.8.
+    static func jpegBase64(
+        data: Data,
+        maxDimension: CGFloat = 1600,
+        quality: CGFloat = 0.8
+    ) -> String? {
+        guard let image = UIImage(data: data) else { return nil }
+
+        let pixelWidth = image.size.width * image.scale
+        let pixelHeight = image.size.height * image.scale
+        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+
+        let scale = min(1, maxDimension / max(pixelWidth, pixelHeight))
+        let target = CGSize(
+            width: max(1, (pixelWidth * scale).rounded()),
+            height: max(1, (pixelHeight * scale).rounded())
         )
-    }
 
-    static func jpegBase64(data: Data, maxDimension: CGFloat = 1600, quality: CGFloat = 0.8) -> String? {
-        jpegData(data: data, maxDimension: maxDimension, quality: quality)?.base64EncodedString()
-    }
-
-    private static func jpegData(data: Data, maxDimension: CGFloat, quality: CGFloat) -> Data? {
-        guard let image = thumbnail(data: data, maxDimension: maxDimension) else { return nil }
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         format.opaque = true
-        let size = image.size
-        let renderer = UIGraphicsImageRenderer(size: size, format: format)
-        // Flatten transparency onto white so PNGs with alpha stay readable.
-        let flattened = renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-            image.draw(in: CGRect(origin: .zero, size: size))
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
+        let resized = renderer.image { context in
+            let rect = CGRect(origin: .zero, size: target)
+            context.cgContext.setFillColor(UIColor.white.cgColor)
+            context.cgContext.fill(rect)
+            image.draw(in: rect)
         }
-        return flattened.jpegData(compressionQuality: quality)
-    }
 
-    private static func thumbnail(data: Data, maxDimension: CGFloat) -> UIImage? {
-        let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
-        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }
-        let thumbOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
-        ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else { return nil }
-        return UIImage(cgImage: cg)
+        return resized.jpegData(compressionQuality: quality)?.base64EncodedString()
     }
 }

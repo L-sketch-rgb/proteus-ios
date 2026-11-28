@@ -395,6 +395,7 @@ private struct TerminalViewRepresentable: UIViewRepresentable {
 struct TerminalScreen: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.proteusTheme) private var theme
 
     @StateObject private var controller = TerminalController()
     @State private var didBind = false
@@ -408,16 +409,62 @@ struct TerminalScreen: View {
     }
 
     var body: some View {
+        screen
+            .onAppear {
+                guard !didBind else { return }
+                didBind = true
+                controller.bind(
+                    app: app,
+                    target: target,
+                    showGreeting: app.showShellGreeting
+                )
+                controller.applyColors(isDark: colorScheme == .dark)
+                controller.applyTextScale(percent: Double(textScale))
+            }
+            .onDisappear {
+                controller.unbind()
+            }
+            .onChange(of: colorScheme) { _, newValue in
+                controller.applyColors(isDark: newValue == .dark)
+            }
+            .onChange(of: textScale) { _, newValue in
+                controller.applyTextScale(percent: Double(newValue))
+            }
+            .onReceive(app.terminalOutput) { chunk in
+                guard let id = controller.termId, id == chunk.id else { return }
+                controller.feedReplayAware(chunk)
+            }
+            .onReceive(app.$lastTerminalOpenId) { id in
+                guard let id else { return }
+                controller.handleOpened(id)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .terminalViewControlModifierReset)) { _ in
+                controller.refreshModifiers()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .terminalViewMetaModifierReset)) { _ in
+                controller.refreshModifiers()
+            }
+    }
+
+    /// The view tree on its own. Release whole-module optimisation gave up on
+    /// `body` while the ZStack, the accessory inset, the toolbar menu and eight
+    /// lifecycle modifiers were one expression: "the compiler is unable to
+    /// type-check this expression in reasonable time" (TerminalScreen:491).
+    private var screen: some View {
         ZStack(alignment: .top) {
             TerminalViewRepresentable(controller: controller)
-                .background(Color.clear)
+                .background(theme.terminalSurface)
+                // Text must not start under the panel's rounded corner.
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
 
             if let code = exitCode {
                 HStack(spacing: 8) {
                     Image(systemName: "termination")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(theme.statusNeedsYou)
                     Text("Shell exited (code \(code)).")
                         .font(.footnote.weight(.medium))
+                        .foregroundStyle(theme.textPrimary)
                     Spacer()
                     Button("Close") {
                         if let id = controller.termId {
@@ -427,11 +474,21 @@ struct TerminalScreen: View {
                     .font(.footnote.weight(.semibold))
                 }
                 .padding(10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(theme.popover, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(theme.hairline, lineWidth: 1)
+                }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
             }
         }
+        .background(theme.terminalSurface)
+        .clipShape(panelShape)
+        .overlay { panelShape.strokeBorder(theme.rim, lineWidth: 1) }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .screenWave()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             TerminalAccessoryBar(
                 controller: controller,
@@ -442,76 +499,51 @@ struct TerminalScreen: View {
         }
         .navigationTitle(controller.title)
         .navigationBarTitleDisplayMode(.inline)
+        .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        controller.sendKey(.escape)
-                    } label: {
-                        Label("Send Esc", systemImage: "escape")
-                    }
-                    Button {
-                        controller.sendKey(.tab)
-                    } label: {
-                        Label("Send Tab", systemImage: "arrow.right.to.line")
-                    }
-                    Divider()
-                    Button {
-                        controller.setFontSize(controller.fontSize - 1, persist: true)
-                    } label: {
-                        Label("Smaller text", systemImage: "textformat.size.smaller")
-                    }
-                    Button {
-                        controller.setFontSize(controller.fontSize + 1, persist: true)
-                    } label: {
-                        Label("Larger text", systemImage: "textformat.size.larger")
-                    }
-                    Divider()
-                    Button(role: .destructive) {
-                        if let id = controller.termId {
-                            app.closeTerminal(id)
-                        }
-                    } label: {
-                        Label("Close terminal", systemImage: "xmark.circle")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
+                optionsMenu
             }
         }
-        .onAppear {
-            guard !didBind else { return }
-            didBind = true
-            controller.bind(
-                app: app,
-                target: target,
-                showGreeting: app.showShellGreeting
-            )
-            controller.applyColors(isDark: colorScheme == .dark)
-            controller.applyTextScale(percent: Double(textScale))
-        }
-        .onDisappear {
-            controller.unbind()
-        }
-        .onChange(of: colorScheme) { _, newValue in
-            controller.applyColors(isDark: newValue == .dark)
-        }
-        .onChange(of: textScale) { _, newValue in
-            controller.applyTextScale(percent: Double(newValue))
-        }
-        .onReceive(app.terminalOutput) { chunk in
-            guard let id = controller.termId, id == chunk.id else { return }
-            controller.feedReplayAware(chunk)
-        }
-        .onReceive(app.$lastTerminalOpenId) { id in
-            guard let id else { return }
-            controller.handleOpened(id)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .terminalViewControlModifierReset)) { _ in
-            controller.refreshModifiers()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .terminalViewMetaModifierReset)) { _ in
-            controller.refreshModifiers()
+    }
+
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+    }
+
+    private var optionsMenu: some View {
+        Menu {
+            Button {
+                controller.sendKey(.escape)
+            } label: {
+                Label("Send Esc", systemImage: "escape")
+            }
+            Button {
+                controller.sendKey(.tab)
+            } label: {
+                Label("Send Tab", systemImage: "arrow.right.to.line")
+            }
+            Divider()
+            Button {
+                controller.setFontSize(controller.fontSize - 1, persist: true)
+            } label: {
+                Label("Smaller text", systemImage: "textformat.size.smaller")
+            }
+            Button {
+                controller.setFontSize(controller.fontSize + 1, persist: true)
+            } label: {
+                Label("Larger text", systemImage: "textformat.size.larger")
+            }
+            Divider()
+            Button(role: .destructive) {
+                if let id = controller.termId {
+                    app.closeTerminal(id)
+                }
+            } label: {
+                Label("Close terminal", systemImage: "xmark.circle")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
     }
 }
@@ -520,6 +552,7 @@ struct TerminalScreen: View {
 
 private struct TerminalAccessoryBar: View {
     @ObservedObject var controller: TerminalController
+    @Environment(\.proteusTheme) private var theme
     let onKey: (TerminalKey) -> Void
     let onText: (String) -> Void
     let onHideKeyboard: () -> Void
@@ -554,10 +587,7 @@ private struct TerminalAccessoryBar: View {
             .padding(.horizontal, 10)
             .frame(height: 44)
         }
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Divider().opacity(0.4)
-        }
+        .chromeBar(theme, edge: .top)
     }
 
     private func barButton(_ label: String, action: @escaping () -> Void) -> some View {

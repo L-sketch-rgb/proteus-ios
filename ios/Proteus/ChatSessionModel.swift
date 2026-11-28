@@ -26,16 +26,10 @@ final class ChatSessionModel: ObservableObject, Identifiable {
     var scrollAtBottom = true
     var scrollLastSeenCount = 0
 
-    /// True while an older page is requested from the hub.
-    var loadingOlder = false
-    /// The hub has older history than the rows held.
-    var hasOlderHistory: Bool { chat.hasOlderHistory }
-    var historyOffset: Int { chat.historyOffset }
-
     init(id: String) {
         self.id = id
         chat.reset(sessionId: id)
-        chat.onChange = { [weak self] in self?.scheduleRefresh() }
+        chat.onChange = { [weak self] in self?.refreshRows() }
         chat.onTask = { [weak self] task in self?.tasks.replace(task) }
         tasks.onChange = { [weak self] in self?.refreshTasks() }
     }
@@ -90,16 +84,9 @@ final class ChatSessionModel: ObservableObject, Identifiable {
     }
 
     func applyHistory(_ frame: HistoryFrame) {
-        loadingOlder = false
-        if frame.older {
-            chat.prependHistory(frame.items, offset: frame.offset ?? 0)
-            refreshRows()
-            return
-        }
         tasks.reset()
         permissions = []
-        chat.applyHistory(frame.items, lastSeq: frame.lastSeq, offset: frame.offset)
-        refreshRows()
+        chat.applyHistory(frame.items, lastSeq: frame.lastSeq)
         refreshTasks()
     }
 
@@ -116,32 +103,10 @@ final class ChatSessionModel: ObservableObject, Identifiable {
         tasks.reset()
         permissions = []
         chat.reset(sessionId: id)
-        refreshRows()
         refreshTasks()
     }
 
-    // Perf: a fast stream sends dozens of deltas a second and each @Published
-    // write re-diffs the transcript. Publish at most every 60 ms (leading edge
-    // immediate, trailing edge guaranteed) so the UI sees every final state.
-    private var lastPublish = Date.distantPast
-    private var refreshPending = false
-    private static let publishInterval: TimeInterval = 0.06
-
-    private func scheduleRefresh() {
-        let wait = Self.publishInterval - Date().timeIntervalSince(lastPublish)
-        if wait <= 0 {
-            refreshRows()
-        } else if !refreshPending {
-            refreshPending = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-                self?.refreshRows()
-            }
-        }
-    }
-
     private func refreshRows() {
-        refreshPending = false
-        lastPublish = Date()
         rows = chat.visibleRows
         contentVersion += 1
     }
