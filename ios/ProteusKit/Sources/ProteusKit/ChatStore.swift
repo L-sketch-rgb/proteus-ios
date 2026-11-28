@@ -194,6 +194,21 @@ public final class ChatStore {
         rowCounter = 0
     }
 
+    /// Takes over everything `other` folded (a history built off the main
+    /// thread), without notifying; the caller publishes once.
+    public func replaceState(from other: ChatStore) {
+        rows = other.rows
+        visibleRows = other.visibleRows
+        entries = other.entries
+        lastSeq = other.lastSeq
+        historyOffset = other.historyOffset
+        tasks = other.tasks
+        tasksByToolUseId = other.tasksByToolUseId
+        expandedGroups = other.expandedGroups
+        assistantTurnStarted = other.assistantTurnStarted
+        rowCounter = other.rowCounter
+    }
+
     /// A message the user just sent from a new-chat draft, shown at once while
     /// the hub creates the session. The history frame that follows replaces it.
     public func appendLocalUser(_ text: String) {
@@ -487,7 +502,17 @@ public final class ChatStore {
                 }
             }
             removeTrailingStreaming()
-            let blocks: [Block] = (try? data["blocks"]?.decode([Block].self)) ?? []
+            // Read the blocks straight off the tree. `decode` re-encodes the
+            // whole subtree to JSON text and parses it again, per message.
+            let blocks: [Block] = (data["blocks"]?.arrayValue ?? []).map { block in
+                Block(
+                    type: block["type"]?.stringValue ?? "",
+                    text: block["text"]?.stringValue,
+                    id: block["id"]?.stringValue,
+                    name: block["name"]?.stringValue,
+                    input: block["input"]
+                )
+            }
             var firstText = true
             for block in blocks {
                 switch block.type {
@@ -519,7 +544,7 @@ public final class ChatStore {
                     row.toolId = toolId
                     row.toolName = name
                     row.toolSummary = Formatting.toolSummary(name: name, input: block.input)
-                    row.toolInput = block.input?.compactJSONString()
+                    row.toolInput = block.input.map { Self.capped($0.compactJSONString(), Self.toolInputCap) }
                     row.tsRaw = ts
                     row.timestamp = timestamp
                     row.eventSeq = seq
@@ -533,11 +558,10 @@ public final class ChatStore {
             }
 
         case "tool_result":
-            let result = try? data.decode(ToolResultData.self)
-            let toolId = result?.toolUseId ?? data["toolUseId"]?.stringValue ?? ""
+            let toolId = data["toolUseId"]?.stringValue ?? ""
             guard let index = entries.lastIndex(where: { $0.toolId == toolId }) else { return }
-            entries[index].toolResult = result?.text ?? data["text"]?.stringValue ?? ""
-            entries[index].toolError = result?.isError ?? (data["isError"]?.boolValue ?? false)
+            entries[index].toolResult = Self.capped(data["text"]?.stringValue ?? "", Self.toolResultCap)
+            entries[index].toolError = data["isError"]?.boolValue ?? false
             entries[index].toolDone = true
 
         case "result":
@@ -633,6 +657,17 @@ public final class ChatStore {
             // "status" and unknown kinds are not chat rows.
             break
         }
+    }
+
+    /// Rows keep at most this much of a tool's output / input (the card shows
+    /// a preview and "Show more"); a 200 KB result costs memory and every
+    /// row comparison otherwise.
+    public static let toolResultCap = 6_000
+    public static let toolInputCap = 4_000
+
+    static func capped(_ text: String, _ cap: Int) -> String {
+        guard text.utf8.count > cap else { return text }
+        return String(text.prefix(cap)) + "\n… (cut)"
     }
 
     private func clearStreamingFlags() {

@@ -5,6 +5,7 @@ import ProteusKit
 /// a Custom section (date, hour, minute in local time) and the resolved wording
 /// with a primary "Schedule" button.
 struct ScheduleSheet: View {
+    @Environment(\.proteusTheme) private var theme
     let title: String
     let initialDate: Date?
     let onSchedule: (Date) -> Void
@@ -130,7 +131,7 @@ struct ScheduleSheet: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
+                .background(theme.chrome)
             }
             .onKeyPress(.escape) {
                 dismiss()
@@ -142,7 +143,6 @@ struct ScheduleSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .presentationBackground(.ultraThinMaterial)
         // v10 §1: the picker is closeable by the Cancel button, Esc, or the
         // native swipe-down; closing it cancels the schedule.
         .presentationDragIndicator(.visible)

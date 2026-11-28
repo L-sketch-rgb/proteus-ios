@@ -76,7 +76,6 @@ struct InspectorSheet: View {
                 }
             }
         }
-        .presentationBackground(.ultraThinMaterial)
         .onChange(of: tab) { _, value in
             if value == .terminal { terminalVisited = true }
         }
@@ -102,7 +101,6 @@ struct InspectorSheet: View {
         }
         .padding(.horizontal, ProteusTheme.Space.gutter)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
         .background(theme.chrome)
         .overlay(alignment: .bottom) {
             Rectangle().fill(theme.hairline).frame(height: 1)

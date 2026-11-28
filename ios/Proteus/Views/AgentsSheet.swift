@@ -38,7 +38,6 @@ struct AgentsSheet: View {
                         }
                     }
             }
-            .presentationBackground(.ultraThinMaterial)
         }
     }
 

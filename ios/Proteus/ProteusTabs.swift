@@ -46,6 +46,8 @@ struct ProteusRootView: View {
                 .tag(ProteusTab.settings)
         }
         .tint(theme.accent)
+        .toolbarBackground(theme.chrome, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .onAppear { routeDemoTab() }
         .onChange(of: app.pendingOpenChatId) { _, id in
             // A tapped notification always lands on the chat, whichever tab

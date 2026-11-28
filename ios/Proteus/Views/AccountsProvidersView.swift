@@ -72,20 +72,20 @@ struct AccountsProvidersView: View {
         .navigationTitle("Accounts & providers")
         .navigationBarTitleDisplayMode(.inline)
         .chromeToolbar(theme)
-        .sheet(isPresented: $showAddProvider) {
+        .themedSheet(isPresented: $showAddProvider) {
             AddProviderSheet()
         }
-        .sheet(item: $addAccountTarget) { target in
+        .themedSheet(item: $addAccountTarget) { target in
             AddAccountSheet(
                 provider: target.provider,
                 providerLabel: app.prettyProvider(target.provider),
                 preset: ProviderPresets.all.first { $0.provider?.id == target.provider }
             )
         }
-        .sheet(item: $keyTarget) { account in
+        .themedSheet(item: $keyTarget) { account in
             APIKeySheet(account: account)
         }
-        .sheet(item: $renameTarget) { account in
+        .themedSheet(item: $renameTarget) { account in
             AccountRenameSheet(account: account) { label in
                 app.renameAccount(account, label: label)
             }
@@ -385,6 +385,5 @@ private struct APIKeySheet: View {
             }
         }
         .presentationDetents([.height(280)])
-        .presentationBackground(.ultraThinMaterial)
     }
 }

@@ -66,7 +66,7 @@ struct WorkstationsView: View {
                 .accessibilityLabel("Add workstation")
             }
         }
-        .sheet(isPresented: $showAdd) {
+        .themedSheet(isPresented: $showAdd) {
             AddWorkstationSheet()
         }
         .confirmationDialog(
@@ -256,7 +256,6 @@ private struct AddWorkstationSheet: View {
                 }
             }
         }
-        .presentationBackground(.ultraThinMaterial)
     }
 
     private func field(

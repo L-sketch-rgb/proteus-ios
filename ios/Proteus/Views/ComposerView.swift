@@ -200,7 +200,7 @@ struct ComposerView: View {
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
         }
-        .sheet(isPresented: $showSchedule, onDismiss: {
+        .themedSheet(isPresented: $showSchedule, onDismiss: {
             // v10 §1: any close that is not a confirmation cancels the
             // schedule; the "/schedule " text stays in the composer.
             scheduledText = ""
@@ -210,14 +210,14 @@ struct ComposerView: View {
                 app.discardDraft(for: chat.id)
             }
         }
-        .sheet(isPresented: $showModelPicker) {
+        .themedSheet(isPresented: $showModelPicker) {
             SlashModelPickerSheet { id in
                 app.setModel(id)
                 app.discardDraft(for: chat.id)
                 showModelPicker = false
             }
         }
-        .sheet(isPresented: $showHelp) {
+        .themedSheet(isPresented: $showHelp) {
             SlashHelpSheet()
         }
         .confirmationDialog("Permission mode", isPresented: $showModeDialog, titleVisibility: .visible) {

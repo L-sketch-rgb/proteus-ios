@@ -32,7 +32,6 @@ struct PinsSheet: View {
                         }
                     }
             }
-            .presentationBackground(.ultraThinMaterial)
         }
     }
 

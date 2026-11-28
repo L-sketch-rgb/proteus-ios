@@ -18,6 +18,12 @@ public enum JSONValue: Codable, Hashable, Sendable {
             self = .null
             return
         }
+        // Strings first: they are nearly every node in a transcript, and each
+        // failed `try?` below builds a DecodingError.
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+            return
+        }
         if let value = try? container.decode(Bool.self) {
             self = .bool(value)
             return
@@ -28,10 +34,6 @@ public enum JSONValue: Codable, Hashable, Sendable {
         }
         if let value = try? container.decode(Double.self) {
             self = .double(value)
-            return
-        }
-        if let value = try? container.decode(String.self) {
-            self = .string(value)
             return
         }
         if let value = try? container.decode([JSONValue].self) {
@@ -58,6 +60,46 @@ public enum JSONValue: Codable, Hashable, Sendable {
         case .string(let value): try container.encode(value)
         case .array(let value): try container.encode(value)
         case .object(let value): try container.encode(value)
+        }
+    }
+
+    /// Builds a tree from `JSONSerialization` output. Orders of magnitude
+    /// cheaper than the Codable path for a large history frame.
+    public init(any value: Any) {
+        switch value {
+        case is NSNull:
+            self = .null
+        case let string as String:
+            self = .string(string)
+        case let number as NSNumber:
+            let kind = String(cString: number.objCType)
+            if kind == "c" {
+                self = .bool(number.boolValue)
+            } else if kind == "d" || kind == "f" {
+                self = .double(number.doubleValue)
+            } else {
+                self = .int(number.intValue)
+            }
+        case let array as [Any]:
+            self = .array(array.map { JSONValue(any: $0) })
+        case let object as [String: Any]:
+            self = .object(object.mapValues { JSONValue(any: $0) })
+        default:
+            self = .null
+        }
+    }
+
+    /// The same tree with every string cut to `cap` characters.
+    public func cappingStrings(_ cap: Int) -> JSONValue {
+        switch self {
+        case .string(let value):
+            return value.utf8.count > cap ? .string(String(value.prefix(cap))) : self
+        case .array(let value):
+            return .array(value.map { $0.cappingStrings(cap) })
+        case .object(let value):
+            return .object(value.mapValues { $0.cappingStrings(cap) })
+        default:
+            return self
         }
     }
 

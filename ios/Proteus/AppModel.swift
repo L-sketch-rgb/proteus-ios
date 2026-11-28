@@ -715,6 +715,7 @@ final class AppModel: ObservableObject {
     func chatModel(for id: String) -> ChatSessionModel {
         if let existing = chats[id] { return existing }
         let chat = ChatSessionModel(id: id)
+        wireBackfill(chat)
         if let session = sessionStore.session(id: id) {
             chat.updateSession(session)
         }
@@ -728,6 +729,7 @@ final class AppModel: ObservableObject {
 
     func attach(_ chat: ChatSessionModel) {
         activeChat = chat
+        wireBackfill(chat)
         if let session = sessionStore.session(id: chat.id) {
             chat.updateSession(session)
         }
@@ -741,7 +743,11 @@ final class AppModel: ObservableObject {
 
     /// The first page is small so a chat opens at once; the rest pages in when
     /// the user scrolls up.
-    static let historyPageSize = 40
+    static let historyPageSize = 16
+    /// Backfill chunk: older rows fetched one chunk at a time after first paint.
+    static let historyChunkSize = 20
+    /// The backfill stops here; older rows come only when the user scrolls up.
+    static let backfillRowLimit = 400
 
     // MARK: - New-chat drafts
 
@@ -752,6 +758,7 @@ final class AppModel: ObservableObject {
     func draftChat(for target: NewChatTarget) -> ChatSessionModel {
         if let existing = newChatDrafts[target.token] { return existing }
         let chat = ChatSessionModel(id: ChatSessionModel.draftPrefix + target.token.uuidString)
+        wireBackfill(chat)
         chat.draftProject = target.project
         chat.draftFolder = folderFor(project: target.project)
         chat.draftModel = defaultModelForNewChat(project: target.project)
@@ -811,8 +818,47 @@ final class AppModel: ObservableObject {
     /// Does nothing on an older hub (it sent everything, so offset is 0).
     func loadOlderHistory(_ chat: ChatSessionModel) {
         guard chat.hasOlderHistory, !chat.loadingOlder else { return }
+        // An old hub sent the whole history: page it in from memory.
+        if chat.hasBacklog {
+            chat.prependFromBacklog()
+            return
+        }
         chat.loadingOlder = true
-        hubClient?.openOlder(chat.id, before: chat.historyOffset, limit: Self.historyPageSize)
+        hubClient?.openOlder(chat.id, before: chat.historyOffset, limit: Self.historyChunkSize)
+    }
+
+    // MARK: - Backfill
+
+    private var backfillScheduled: Set<String> = []
+
+    private func wireBackfill(_ chat: ChatSessionModel) {
+        chat.onHistoryLanded = { [weak self, weak chat] in
+            guard let self, let chat else { return }
+            self.scheduleBackfill(chat)
+        }
+    }
+
+    /// Older rows load after the first paint, one small chunk at a time with
+    /// an idle gap between chunks. Only while this chat is the one on screen,
+    /// the app is in the foreground and Low Power Mode is off; otherwise rows
+    /// come only when the user scrolls up (on demand).
+    private func backfillAllowed(_ chat: ChatSessionModel) -> Bool {
+        activeChat === chat && !chat.isDraft && chat.hasOlderHistory && !chat.loadingOlder
+            && chat.entryCount < Self.backfillRowLimit
+            && UIApplication.shared.applicationState == .active
+            && !ProcessInfo.processInfo.isLowPowerModeEnabled
+    }
+
+    func scheduleBackfill(_ chat: ChatSessionModel) {
+        guard backfillAllowed(chat), !backfillScheduled.contains(chat.id) else { return }
+        backfillScheduled.insert(chat.id)
+        let id = chat.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak chat] in
+            guard let self else { return }
+            self.backfillScheduled.remove(id)
+            guard let chat, self.backfillAllowed(chat) else { return }
+            self.loadOlderHistory(chat)
+        }
     }
 
     func openSession(_ id: String) {
@@ -1790,6 +1836,47 @@ final class AppModel: ObservableObject {
         terminals = terminalStore.terms
 
         loadDemoChat()
+        if demoScreen == "bigchat" { prepareBigChatDemo() }
+    }
+
+    // MARK: - Large-chat stall demo (CI)
+
+    private var bigChatData: Data?
+
+    /// Builds the synthetic history off the main thread, before anything is
+    /// measured.
+    private func prepareBigChatDemo() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let items = SyntheticHistory.items(count: 4000)
+            let data = try? SyntheticHistory.frameData(id: "demo-big", items: items, offset: nil, total: nil)
+            DispatchQueue.main.async { self?.bigChatData = data }
+        }
+    }
+
+    /// Opens the chat and feeds it the old-hub worst case, a 4000-item history
+    /// in one frame, through the real decode and ChatSessionModel path, while
+    /// the watchdog times the main thread.
+    func runBigChatDemo(open: @escaping () -> Void) {
+        guard let data = bigChatData else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.runBigChatDemo(open: open) }
+            return
+        }
+        bigChatData = nil
+        StallWatchdog.shared.start(seconds: 18)
+        StallWatchdog.shared.phase = "open-chat"
+        open()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let started = DispatchTime.now().uptimeNanoseconds
+                guard let message = try? ServerMessage.decode(data), case .history(let frame) = message else { return }
+                let ms = (DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+                StallWatchdog.shared.note("decode (background) \(ms) ms, \(data.count / 1_000_000) MB, \(frame.items.count) items")
+                DispatchQueue.main.async {
+                    StallWatchdog.shared.phase = "apply-history"
+                    self?.chatModel(for: "demo-big").applyHistory(frame)
+                }
+            }
+        }
     }
 
     private func loadDemoChat() {

@@ -82,20 +82,15 @@ extension SessionStatus {
 
 private struct GlassCardModifier: ViewModifier {
     var cornerRadius: CGFloat
+    @Environment(\.proteusTheme) private var theme
 
-    @ViewBuilder
+    /// The app's own card surface (the `popover` token with the `rim` line),
+    /// not the system glass/material, which renders a plain grey.
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(
-                .regular,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-        } else {
-            content.background(
-                .ultraThinMaterial,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-        }
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(theme.popover, in: shape)
+            .overlay { shape.strokeBorder(theme.rim, lineWidth: 1) }
     }
 }
 
@@ -115,6 +110,44 @@ extension View {
     }
 }
 
+// MARK: - Sheets
+
+private struct ThemedSheetStyle: ViewModifier {
+    @Environment(\.proteusTheme) private var theme
+
+    /// A sheet in the app's colours: the `sheet` token behind it (not the
+    /// system grey or a material), lists and forms without their grouped grey
+    /// page, and the app's chrome band on its navigation bar.
+    func body(content: Content) -> some View {
+        content
+            .scrollContentBackground(.hidden)
+            .toolbarBackground(theme.chrome, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .presentationBackground(theme.sheet)
+    }
+}
+
+extension View {
+    func themedSheetStyle() -> some View { modifier(ThemedSheetStyle()) }
+
+    /// `.sheet` whose content gets `themedSheetStyle`.
+    func themedSheet<Content: View>(
+        isPresented: Binding<Bool>,
+        onDismiss: (() -> Void)? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        sheet(isPresented: isPresented, onDismiss: onDismiss) { content().themedSheetStyle() }
+    }
+
+    func themedSheet<Item: Identifiable, Content: View>(
+        item: Binding<Item?>,
+        onDismiss: (() -> Void)? = nil,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        sheet(item: item, onDismiss: onDismiss) { content($0).themedSheetStyle() }
+    }
+}
+
 // MARK: - Shared bits
 
 enum ChatColors {
@@ -125,6 +158,7 @@ enum ChatColors {
 }
 
 struct ErrorBanner: View {
+    @Environment(\.proteusTheme) private var theme
     let text: String
     let onDismiss: () -> Void
 
@@ -142,7 +176,7 @@ struct ErrorBanner: View {
             .buttonStyle(.plain)
         }
         .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(theme.popover, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
@@ -151,6 +185,7 @@ struct ErrorBanner: View {
 /// v10 §15.1: one dismissible banner per connection when the hub predates
 /// some of this app's optional features.
 struct OldHubBanner: View {
+    @Environment(\.proteusTheme) private var theme
     let onDismiss: () -> Void
 
     var body: some View {
@@ -168,13 +203,14 @@ struct OldHubBanner: View {
             .accessibilityLabel("Dismiss")
         }
         .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(theme.popover, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
 }
 
 struct ConnectionBanner: View {
+    @Environment(\.proteusTheme) private var theme
     let state: ConnectionState
     let hasWorkstation: Bool
     let onRetry: () -> Void
@@ -211,7 +247,7 @@ struct ConnectionBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(.ultraThinMaterial)
+        .background(theme.chrome)
     }
 
     private var color: Color {

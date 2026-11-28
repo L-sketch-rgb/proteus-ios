@@ -106,7 +106,39 @@ final class ChatSessionModel: ObservableObject, Identifiable {
     }
 
     func apply(_ event: HubEvent) {
+        // A history is being folded off the main thread: hold live events
+        // until it lands so they apply on top of it, in order.
+        if isFolding {
+            bufferedEvents.append(event)
+            return
+        }
         chat.apply(event)
+    }
+
+    // MARK: - History (folded off the main thread)
+
+    private static let foldQueue = DispatchQueue(label: "proteus.history.fold", qos: .userInitiated)
+    private var isFolding = false
+    private var foldGeneration = 0
+    private var bufferedEvents: [HubEvent] = []
+    /// Older items an old hub sent in full. Held here, paged in locally.
+    private var backlog: [HistoryItem] = []
+    var hasBacklog: Bool { !backlog.isEmpty }
+    /// Told after every history chunk lands (first page or older chunk); the
+    /// app uses it to schedule the next background backfill chunk.
+    var onHistoryLanded: (() -> Void)?
+
+    /// Pages the next 40 backlog items in front of the rows. Main thread, but
+    /// only 40 items.
+    func prependFromBacklog() {
+        guard !backlog.isEmpty else { return }
+        let take = min(AppModel.historyChunkSize, backlog.count)
+        let page = Array(backlog.suffix(take))
+        backlog.removeLast(take)
+        chat.prependHistory(page, offset: backlog.count)
+        loadingOlder = false
+        refreshRows()
+        onHistoryLanded?()
     }
 
     /// The draft's first message created session `newId` on the hub: this model
@@ -120,17 +152,65 @@ final class ChatSessionModel: ObservableObject, Identifiable {
 
     func applyHistory(_ frame: HistoryFrame) {
         loadingOlder = false
-        historyLoaded = true
         if frame.older {
             chat.prependHistory(frame.items, offset: frame.offset ?? 0)
             refreshRows()
+            onHistoryLanded?()
             return
         }
         tasks.reset()
         permissions = []
-        chat.applyHistory(frame.items, lastSeq: frame.lastSeq, offset: frame.offset)
+        // Everything heavy happens on `foldQueue`: splitting off the backlog
+        // (an old hub sends the whole history), folding the newest rows into a
+        // private ChatStore, and warming the markdown cache for the rows that
+        // show first. The main thread only swaps the result in and publishes
+        // once.
+        foldGeneration += 1
+        let generation = foldGeneration
+        isFolding = true
+        bufferedEvents = []
+        let sessionId = id
+        let lastSeq = frame.lastSeq
+        let offset = frame.offset
+        let items = frame.items
+        Self.foldQueue.async { [weak self] in
+            let started = DispatchTime.now().uptimeNanoseconds
+            let (held, tail) = HistoryTail.split(items, offset: offset)
+            let store = ChatStore()
+            store.reset(sessionId: sessionId)
+            store.applyHistory(tail, lastSeq: lastSeq, offset: offset ?? held.count)
+            let foldMs = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+            let warmStart = DispatchTime.now().uptimeNanoseconds
+            // Newest assistant rows first; bounded so a freak history cannot
+            // delay the first paint.
+            var warmed = 0
+            for row in store.visibleRows.reversed() where row.kind == .assistant {
+                MarkdownCache.prewarm(row.text.utf8.count > 4000 ? String(row.text.prefix(2500)) : row.text)
+                warmed += 1
+                if warmed >= 12 || DispatchTime.now().uptimeNanoseconds - warmStart > 400_000_000 { break }
+            }
+            let warmMs = Int((DispatchTime.now().uptimeNanoseconds - warmStart) / 1_000_000)
+            DispatchQueue.main.async {
+                guard let self, self.foldGeneration == generation else { return }
+                self.finishFold(store, held: held, foldMs: foldMs, warmMs: warmMs, items: items.count)
+            }
+        }
+    }
+
+    private func finishFold(_ store: ChatStore, held: [HistoryItem], foldMs: Int, warmMs: Int, items: Int) {
+        chat.replaceState(from: store)
+        backlog = held
+        for task in store.tasks.values { tasks.replace(task) }
+        isFolding = false
+        historyLoaded = true
+        let pending = bufferedEvents
+        bufferedEvents = []
+        for event in pending { chat.apply(event) }
         refreshRows()
         refreshTasks()
+        StallWatchdog.shared.mark("first page landed")
+        onHistoryLanded?()
+        NSLog("PERF history items=\(items) fold_ms=\(foldMs) warm_ms=\(warmMs) backlog=\(held.count)")
     }
 
     func addPermission(_ request: PermissionRequest) {
@@ -143,6 +223,10 @@ final class ChatSessionModel: ObservableObject, Identifiable {
     }
 
     func reset() {
+        foldGeneration += 1
+        isFolding = false
+        bufferedEvents = []
+        backlog = []
         tasks.reset()
         permissions = []
         chat.reset(sessionId: id)

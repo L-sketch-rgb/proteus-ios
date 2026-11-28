@@ -504,6 +504,45 @@ public struct HistoryFrame: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey { case id, items, lastSeq, offset, total, older }
+
+    public init(id: String, items: [HistoryItem], lastSeq: Int, offset: Int? = nil, total: Int? = nil, older: Bool = false) {
+        self.id = id
+        self.items = items
+        self.lastSeq = lastSeq
+        self.offset = offset
+        self.total = total
+        self.older = older
+    }
+
+    /// Decodes a history frame through `JSONSerialization`, not Codable. The
+    /// Codable `JSONValue` tries five types per node (each a thrown error),
+    /// which dominated opening a long chat. Falls back to Codable on any
+    /// surprise so behaviour is unchanged.
+    public static func fastDecode(_ data: Data) throws -> HistoryFrame {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = root["id"] as? String else {
+            return try JSONDecoder().decode(HistoryFrame.self, from: data)
+        }
+        var items: [HistoryItem] = []
+        let raw = root["items"] as? [Any] ?? []
+        items.reserveCapacity(raw.count)
+        for entry in raw {
+            guard let object = entry as? [String: Any], let kind = object["kind"] as? String else { continue }
+            items.append(HistoryItem(
+                ts: object["ts"] as? String ?? "",
+                kind: kind,
+                data: JSONValue(any: object["data"] ?? NSNull())
+            ))
+        }
+        return HistoryFrame(
+            id: id,
+            items: items,
+            lastSeq: (root["lastSeq"] as? NSNumber)?.intValue ?? 0,
+            offset: (root["offset"] as? NSNumber)?.intValue,
+            total: (root["total"] as? NSNumber)?.intValue,
+            older: (root["older"] as? NSNumber)?.boolValue ?? false
+        )
+    }
 }
 
 public struct EventFrame: Decodable, Sendable {
@@ -1049,17 +1088,20 @@ public enum ServerMessage: Sendable {
     }
 
     public static func decode(_ data: Data) throws -> ServerMessage {
-        guard let object = try? JSONDecoder.proteus.decode(JSONValue.self, from: data),
-              case .object(let dict) = object,
-              case .string(let t)? = dict["t"] else {
+        // Only the frame type is read up front. Decoding the whole frame into
+        // a JSONValue tree just to find "t" cost a full slow Codable pass over
+        // every frame, a long history included.
+        struct Probe: Decodable { let t: String }
+        guard let probe = try? JSONDecoder.proteus.decode(Probe.self, from: data) else {
             throw FrameError.invalidFrame
         }
+        let t = probe.t
 
         let decoder = JSONDecoder.proteus
         switch t {
         case "welcome": return .welcome(try decoder.decode(WelcomeFrame.self, from: data))
         case "sessions": return .sessions(try decoder.decode(SessionsFrame.self, from: data))
-        case "history": return .history(try decoder.decode(HistoryFrame.self, from: data))
+        case "history": return .history(try HistoryFrame.fastDecode(data))
         case "event": return .event(try decoder.decode(EventFrame.self, from: data))
         case "session.updated": return .sessionUpdated(try decoder.decode(SessionUpdatedFrame.self, from: data))
         case "session.removed": return .sessionRemoved(try decoder.decode(SessionRemovedFrame.self, from: data))
@@ -1090,7 +1132,8 @@ public enum ServerMessage: Sendable {
         case "err": return .err(try decoder.decode(ErrFrame.self, from: data))
         case "pong": return .pong(try decoder.decode(PongFrame.self, from: data))
         default:
-            return .unknown(t: t, raw: object)
+            let raw = (try? JSONDecoder.proteus.decode(JSONValue.self, from: data)) ?? .null
+            return .unknown(t: t, raw: raw)
         }
     }
 }

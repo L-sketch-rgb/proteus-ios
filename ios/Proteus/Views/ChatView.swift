@@ -42,9 +42,6 @@ struct ChatView: View {
 
     @State private var atBottom = true
     @State private var didInitialScroll = false
-    /// Perf: only the newest `windowSize` rows are laid out; older ones page
-    /// in when the user scrolls to the top (or a pin/agent needs one).
-    @State private var windowSize = AppModel.historyPageSize
     @State private var showFolderPicker = false
     @State private var autoLoadArmed = false
     @State private var showInspector = false
@@ -213,7 +210,7 @@ struct ChatView: View {
                 }
             }
         }
-        .sheet(isPresented: $showInspector) {
+        .themedSheet(isPresented: $showInspector) {
             InspectorSheet(
                 chat: chat,
                 tab: $inspectorTab,
@@ -233,10 +230,10 @@ struct ChatView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showFiles) {
+        .themedSheet(isPresented: $showFiles) {
             FilesPanelView(chat: chat)
         }
-        .sheet(item: $renameTarget) { session in
+        .themedSheet(item: $renameTarget) { session in
             RenameChatSheet(session: session)
         }
         .confirmationDialog("Move to project", isPresented: $showMoveDialog, titleVisibility: .visible) {
@@ -379,14 +376,13 @@ struct ChatView: View {
             .padding(.horizontal, ProteusTheme.Space.gutter)
             .padding(.vertical, 8)
         }
-        .background(.ultraThinMaterial)
         .background(theme.chrome)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.primary.opacity(0.07))
                 .frame(height: 1)
         }
-        .sheet(isPresented: $showFolderPicker) {
+        .themedSheet(isPresented: $showFolderPicker) {
             FolderPickerSheet(
                 title: "Chat folder",
                 initialPath: chat.draftFolder.isEmpty ? app.defaultFolder : chat.draftFolder
@@ -458,7 +454,6 @@ struct ChatView: View {
         }
         .padding(.horizontal, ProteusTheme.Space.gutter)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
         .background(theme.chrome)
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -508,7 +503,7 @@ struct ChatView: View {
                         }
                     }
 
-                    if chat.rows.count > windowSize || chat.hasOlderHistory {
+                    if chat.hasOlderHistory {
                         Button {
                             loadEarlier(proxy: proxy)
                         } label: {
@@ -525,7 +520,7 @@ struct ChatView: View {
                         }
                     }
 
-                    ForEach(chat.rows.suffix(windowSize)) { row in
+                    ForEach(chat.rows) { row in
                         if !(row.kind == .tool && !row.groupId.isEmpty && !row.groupExpanded) {
                             ChatRowView(row: row, chat: chat)
                                 .equatable()
@@ -568,10 +563,20 @@ struct ChatView: View {
                             }
                         )
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
             }
+            // The first visible row is the position anchor: when the backfill
+            // puts older rows above it, SwiftUI keeps that row where it was.
+            .scrollPosition(
+                id: Binding<String?>(
+                    get: { tracker.topRowId },
+                    set: { tracker.topRowId = $0 }
+                ),
+                anchor: .top
+            )
             // Start at the bottom without scrollTo: scrollTo on a LazyVStack
             // has to measure every row between the top and the target, which
             // is what froze the app when a long chat opened.
@@ -634,13 +639,23 @@ struct ChatView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
+            .task {
+                // CI stall check (`-ProteusDemoScreen=bigchat`): let the chat
+                // open and settle, then scroll up through it for ~3 s.
+                guard app.isDemo, app.demoScreen == "bigchat" else { return }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                StallWatchdog.shared.phase = "scroll+backfill"
+                for step in 0..<30 {
+                    let rows = chat.rows
+                    guard rows.count > 4 else { break }
+                    proxy.scrollTo(rows[max(0, rows.count - 1 - step * 4)].id, anchor: .top)
+                    if step % 8 == 7 { loadEarlier(proxy: proxy) }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                StallWatchdog.shared.phase = "idle"
+            }
             .onChange(of: scrollTargetId) { _, id in
                 guard let id else { return }
-                // The target may sit above the loaded window.
-                if let index = chat.rows.firstIndex(where: { $0.id == id }),
-                   index < chat.rows.count - windowSize {
-                    windowSize = chat.rows.count - index + 20
-                }
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(id, anchor: .center)
                 }
@@ -711,19 +726,12 @@ struct ChatView: View {
         }
     }
 
-    /// Pages in 40 older rows and keeps the current top row in place.
+    /// On demand: the user reached the top before the background backfill
+    /// did. Asks for the next chunk now; the scroll position holds through
+    /// `scrollPosition(id:)`, there is no scrollTo jump.
     private func loadEarlier(proxy: ScrollViewProxy) {
-        guard chat.rows.count > windowSize || chat.hasOlderHistory else { return }
-        let keep = chat.rows.suffix(windowSize).first?.id
-        let previousWindow = windowSize
-        windowSize += AppModel.historyPageSize
-        if chat.rows.count <= previousWindow {
-            // Everything held is shown: fetch the next page from the hub.
-            app.loadOlderHistory(chat)
-        }
-        if let keep {
-            DispatchQueue.main.async { proxy.scrollTo(keep, anchor: .top) }
-        }
+        guard chat.hasOlderHistory else { return }
+        app.loadOlderHistory(chat)
     }
 
     /// v10 §13: close the pins sheet, expand a collapsed group if needed and
@@ -769,6 +777,8 @@ struct ChatView: View {
 /// (written on every scroll frame while the user is scrolled up).
 private final class ScrollTracker {
     var anchorRowId: String?
+    /// The row `scrollPosition(id:)` reports as first visible.
+    var topRowId: String?
     var rowFrames: [String: CGRect] = [:]
 }
 
@@ -850,9 +860,9 @@ struct ChatRowView: View, Equatable {
     /// parsing of a 50 KB message are what stalled long chats); "Show more"
     /// expands in place.
     @State private var showAll = false
-    private static let previewLimit = 3000
+    private static let previewLimit = 2500
 
-    private var isLong: Bool { row.text.utf8.count > Self.previewLimit * 2 }
+    private var isLong: Bool { row.text.utf8.count > 4000 }
 
     private func shown(_ text: String) -> String {
         guard isLong, !showAll else { return text }
@@ -1203,31 +1213,60 @@ struct NoticeRowView: View {
 
 /// Parsed blocks, cached per text so a body re-evaluation (scroll, any
 /// @Published change) does not re-parse the same message.
-private final class MarkdownBlocksBox {
+final class MarkdownBlocksBox {
     let blocks: [MarkdownBlock]
     init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
 }
 
-private final class StyledBox {
+final class StyledBox {
     let value: AttributedString
     init(_ value: AttributedString) { self.value = value }
 }
 
-private enum MarkdownCache {
+enum MarkdownCache {
     /// Inline-styled text per string: building an AttributedString is the
     /// costly part of a message's body, and bodies re-run on every scroll
     /// invalidation and stream tick.
-    static let styled: NSCache<NSString, StyledBox> = {
+    static let styledCache: NSCache<NSString, StyledBox> = {
         let cache = NSCache<NSString, StyledBox>()
-        cache.totalCostLimit = 4_000_000
+        cache.totalCostLimit = 1_500_000
         return cache
     }()
 
     static let cache: NSCache<NSString, MarkdownBlocksBox> = {
         let cache = NSCache<NSString, MarkdownBlocksBox>()
-        cache.totalCostLimit = 4_000_000
+        cache.totalCostLimit = 1_500_000
         return cache
     }()
+
+    /// Inline markup with inline code in a monospaced face.
+    static func styled(_ string: String) -> AttributedString {
+        let key = string as NSString
+        if let hit = styledCache.object(forKey: key) { return hit.value }
+        var attributed = MarkdownBlocks.inline(string)
+        for run in attributed.runs {
+            if let intent = run.inlinePresentationIntent, intent.contains(.code) {
+                attributed[run.range].font = .system(.callout, design: .monospaced)
+            }
+        }
+        styledCache.setObject(StyledBox(attributed), forKey: key, cost: string.utf8.count * 2)
+        return attributed
+    }
+
+    /// Parses and styles a message ahead of its first layout. Called off the
+    /// main thread for the rows that show first; the caches are NSCaches.
+    static func prewarm(_ text: String) {
+        for block in blocks(for: text) {
+            switch block {
+            case let .heading(_, t), let .paragraph(t), let .quote(t):
+                _ = styled(t)
+            case let .list(items):
+                for item in items { _ = styled(item.text) }
+            default:
+                break
+            }
+        }
+    }
 
     static func blocks(for text: String) -> [MarkdownBlock] {
         let key = text as NSString
@@ -1312,16 +1351,7 @@ struct MarkdownText: View, Equatable {
 
     /// Inline markup with inline code in a monospaced face.
     static func styled(_ string: String) -> AttributedString {
-        let key = string as NSString
-        if let hit = MarkdownCache.styled.object(forKey: key) { return hit.value }
-        var attributed = MarkdownBlocks.inline(string)
-        for run in attributed.runs {
-            if let intent = run.inlinePresentationIntent, intent.contains(.code) {
-                attributed[run.range].font = .system(.callout, design: .monospaced)
-            }
-        }
-        MarkdownCache.styled.setObject(StyledBox(attributed), forKey: key, cost: string.utf8.count * 2)
-        return attributed
+        MarkdownCache.styled(string)
     }
 }
 
@@ -1450,7 +1480,7 @@ struct ToolCardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let input = expandedInput {
                     sectionLabel("Input")
-                    Text(Formatting.truncate(input, 4000))
+                    Text(Formatting.truncate(input, 2000))
                         .font(.system(.caption2, design: .monospaced))
                         .textSelection(.enabled)
                         .lineLimit(40)
@@ -1458,11 +1488,11 @@ struct ToolCardView: View {
                 }
                 if let result = row.toolResult, !result.isEmpty {
                     sectionLabel("Result")
-                    Text(Formatting.truncate(result, fullResult ? 60_000 : 4000))
+                    Text(Formatting.truncate(result, fullResult ? 6000 : 2000))
                         .font(.system(.caption2, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if result.utf8.count > 4000 {
+                    if result.utf8.count > 2000 {
                         Button(fullResult ? "Show less" : "Show more") { fullResult.toggle() }
                             .font(.caption.weight(.semibold))
                             .buttonStyle(.plain)

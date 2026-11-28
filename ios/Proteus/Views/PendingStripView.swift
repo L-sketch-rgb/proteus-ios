@@ -37,7 +37,7 @@ struct PendingStripView: View {
                 .glassCard(cornerRadius: 14)
             }
         }
-        .sheet(item: $rescheduleItem) { item in
+        .themedSheet(item: $rescheduleItem) { item in
             ScheduleSheet(
                 title: "Send at",
                 initialDate: item.scheduledDate

@@ -208,7 +208,6 @@ struct ChromeBar: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(.ultraThinMaterial)
             .background(theme.chrome)
             .overlay(alignment: edge == .top ? .top : .bottom) {
                 Rectangle()

@@ -78,8 +78,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .presentationBackground(.ultraThinMaterial)
-        .sheet(item: $slotEditor) { target in
+        .themedSheet(item: $slotEditor) { target in
             CustomColorPickerSheet(initialIndex: target.index, initialSlot: target.slot)
         }
     }

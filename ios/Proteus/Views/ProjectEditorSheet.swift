@@ -189,7 +189,7 @@ struct ProjectEditorSheet: View {
                         .disabled(!canSave)
                 }
             }
-            .sheet(isPresented: $folderPickerShown) {
+            .themedSheet(isPresented: $folderPickerShown) {
                 FolderPickerSheet(
                     title: "Default folder",
                     initialPath: draft.cwd ?? app.defaultFolder

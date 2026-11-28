@@ -111,7 +111,7 @@ struct ProjectChatsView: View {
                 .accessibilityLabel("New chat")
             }
         }
-        .sheet(item: $renameTarget) { session in
+        .themedSheet(item: $renameTarget) { session in
             RenameChatSheet(session: session)
         }
         .alert(

@@ -143,7 +143,7 @@ struct ChatsHomeView: View {
                 ProjectChatsView(scope: scope)
             }
         }
-        .sheet(isPresented: $showWorkstations) {
+        .themedSheet(isPresented: $showWorkstations) {
             NavigationStack {
                 WorkstationsView()
                     .toolbar {
@@ -153,10 +153,10 @@ struct ChatsHomeView: View {
                     }
             }
         }
-        .sheet(item: $projectEditorTarget) { target in
+        .themedSheet(item: $projectEditorTarget) { target in
             ProjectEditorSheet(project: target.project)
         }
-        .sheet(item: $renameTarget) { session in
+        .themedSheet(item: $renameTarget) { session in
             RenameChatSheet(session: session)
         }
         .alert(
@@ -536,6 +536,8 @@ struct ChatsHomeView: View {
             }
         case "newchat":
             path.append(NewChatTarget(project: app.projects.first?.name ?? ""))
+        case "bigchat":
+            app.runBigChatDemo { path.append("demo-big") }
         default:
             break
         }
@@ -737,6 +739,5 @@ struct RenameChatSheet: View {
             }
         }
         .presentationDetents([.height(180)])
-        .presentationBackground(.ultraThinMaterial)
     }
 }
