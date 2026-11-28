@@ -128,6 +128,7 @@ private func isImageFile(_ path: String) -> Bool {
 
 private struct PlacesView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.proteusTheme) private var theme
 
     @State private var query = ""
     @State private var searched = ""
@@ -187,12 +188,14 @@ private struct PlacesView: View {
                 Label("This hub is too old for files. Update the hub.", systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .filesRow(theme)
             } else if !app.fsRoots.isEmpty {
                 ForEach(FsPaths.grouped(app.fsRoots), id: \.group) { group in
                     Section(groupTitle(group.group)) {
                         ForEach(group.roots) { root in
                             rootRow(root)
                         }
+                        .listRowBackground(theme.readingSurface)
                     }
                 }
             } else if !chatPlaces.isEmpty {
@@ -205,6 +208,7 @@ private struct PlacesView: View {
                             trailing: item.chats > 1 ? "\(item.chats) chats" : nil
                         )
                     }
+                    .listRowBackground(theme.readingSurface)
                 }
             } else {
                 VStack(spacing: 8) {
@@ -221,9 +225,11 @@ private struct PlacesView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
                 .listRowSeparator(.hidden)
+                .filesRow(theme)
             }
         }
         .listStyle(.insetGrouped)
+        .filesListLook()
         .refreshable {
             if app.hasFeature("fs_roots") { app.fsLoadRoots() }
             try? await Task.sleep(nanoseconds: 600_000_000)
@@ -314,6 +320,7 @@ private struct FsIconTile: View {
 
 private struct FsSearchResults: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.proteusTheme) private var theme
 
     let place: FsPlace
     let query: String
@@ -327,7 +334,7 @@ private struct FsSearchResults: View {
     var body: some View {
         List {
             if let error = app.fsErrorText {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.caption).foregroundStyle(.red).filesRow(theme)
             }
             if let found {
                 if found.entries.isEmpty {
@@ -336,6 +343,7 @@ private struct FsSearchResults: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 28)
                         .listRowSeparator(.hidden)
+                        .filesRow(theme)
                 } else {
                     ForEach(found.entries, id: \.path) { entry in
                         let full = entry.path ?? entry.name
@@ -355,11 +363,13 @@ private struct FsSearchResults: View {
                             }
                             .frame(minHeight: 56)
                         }
+                        .filesRow(theme)
                     }
                     if found.truncated {
                         Text("Showing the first matches only. Refine the search.")
                             .font(.caption)
                             .foregroundStyle(.orange)
+                            .filesRow(theme)
                     }
                 }
             } else {
@@ -367,9 +377,11 @@ private struct FsSearchResults: View {
                     .frame(maxWidth: .infinity)
                     .padding(24)
                     .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
         }
         .listStyle(.plain)
+        .filesListLook()
     }
 }
 
@@ -377,6 +389,7 @@ private struct FsSearchResults: View {
 
 private struct FsDirectoryView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.proteusTheme) private var theme
 
     let place: FsPlace
     let path: String
@@ -566,6 +579,7 @@ private struct FsDirectoryView: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .filesRow(theme)
             }
 
             if let listing {
@@ -576,6 +590,7 @@ private struct FsDirectoryView: View {
                 } else {
                     ForEach(entries, id: \.name) { entry in
                         row(entry)
+                            .filesRow(theme)
                     }
                 }
             } else {
@@ -583,9 +598,11 @@ private struct FsDirectoryView: View {
                     .frame(maxWidth: .infinity)
                     .padding(24)
                     .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
         }
         .listStyle(.plain)
+        .filesListLook()
         .refreshable { await refresh() }
     }
 
@@ -636,6 +653,7 @@ private struct FsDirectoryView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 28)
             .listRowSeparator(.hidden)
+            .filesRow(theme)
     }
 
     private func refresh() async {
@@ -953,4 +971,29 @@ private func name(of path: String) -> String {
     let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
     let name = (trimmed as NSString).lastPathComponent
     return name.isEmpty ? path : name
+}
+
+
+// MARK: - App look
+
+/// The Files tab looks like every other screen: the dither wave behind the
+/// list (`screenWave()` also supplies the palette's base colour), the list's
+/// own opaque system background hidden, and every row on the same translucent
+/// reading surface the Settings and Terminals panels use, so text keeps its
+/// contrast. One wave per screen, never per row.
+private struct FilesListLook: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .scrollContentBackground(.hidden)
+            .screenWave()
+    }
+}
+
+private extension View {
+    func filesListLook() -> some View { modifier(FilesListLook()) }
+
+    /// The row scrim: a translucent reading surface behind each row.
+    func filesRow(_ theme: ProteusTheme) -> some View {
+        listRowBackground(theme.readingSurface)
+    }
 }

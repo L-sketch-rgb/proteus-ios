@@ -24,6 +24,14 @@ extension EnvironmentValues {
     }
 }
 
+/// Where "new chat" goes. A destination, not a sheet: the desktop's new chat is
+/// an empty composer (v15 §5.1). It opens the same `ChatView` as every chat,
+/// in an empty draft state; `token` makes each New chat press its own draft.
+struct NewChatTarget: Hashable {
+    var project: String = ""
+    let token = UUID()
+}
+
 struct ChatView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -36,7 +44,8 @@ struct ChatView: View {
     @State private var didInitialScroll = false
     /// Perf: only the newest `windowSize` rows are laid out; older ones page
     /// in when the user scrolls to the top (or a pin/agent needs one).
-    @State private var windowSize = 120
+    @State private var windowSize = AppModel.historyPageSize
+    @State private var showFolderPicker = false
     @State private var autoLoadArmed = false
     @State private var showInspector = false
     @State private var inspectorTab: InspectorTab = .agents
@@ -142,7 +151,7 @@ struct ChatView: View {
         .screenWave()
         // Perf: the dither holds still while a reply streams (the transcript
         // is the hot path); it resumes when the turn ends.
-        .environment(\.waveFrozen, chat.isRunning)
+        .environment(\.waveFrozen, chat.isRunning || !chat.historyLoaded)
         .chromeToolbar(theme)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -160,6 +169,7 @@ struct ChatView: View {
                 .frame(maxWidth: 220)
             }
             ToolbarItem(placement: .topBarTrailing) {
+                if !chat.isDraft {
                 Menu {
                     Button {
                         showFiles = true
@@ -200,6 +210,7 @@ struct ChatView: View {
                     }
                 }
                 .accessibilityLabel("Chat actions")
+                }
             }
         }
         .sheet(isPresented: $showInspector) {
@@ -257,9 +268,14 @@ struct ChatView: View {
         }
         .onAppear {
             app.attach(chat)
-            app.openSession(chat.id)
-            // v18 §3.5a: this chat counts as seen while it is open.
-            app.markSeen(chat.id)
+            if chat.isDraft {
+                app.errorText = nil
+            } else {
+                // A no-op for a draft: it has no session on the hub yet.
+                app.openSession(chat.id)
+                // v18 §3.5a: this chat counts as seen while it is open.
+                app.markSeen(chat.id)
+            }
             if app.isDemo, app.demoScreen == "agents", !didOpenDemoAgents {
                 didOpenDemoAgents = true
                 DispatchQueue.main.async {
@@ -270,6 +286,10 @@ struct ChatView: View {
         }
         .onDisappear {
             app.detach(chat)
+            if chat.isDraft {
+                app.discardNewChatDraft(chat)
+                return
+            }
             app.markSeen(chat.id)
             if app.removedChatId != chat.id {
                 app.closeSession(chat.id)
@@ -277,6 +297,7 @@ struct ChatView: View {
         }
         .onChange(of: chat.session?.updatedAt) { _, _ in
             // Streaming keeps the row read without leaving the chat.
+            guard !chat.isDraft else { return }
             app.markSeen(chat.id)
         }
         .onChange(of: app.removedChatId) { _, id in
@@ -292,7 +313,90 @@ struct ChatView: View {
 
     /// v18 §5.1: the desktop's header strip, phone-sized. One control for model
     /// and mode, one for the inspector; everything rare stays in ⋯.
+    @ViewBuilder
     private var chatHeaderStrip: some View {
+        if chat.isDraft {
+            draftHeaderStrip
+        } else {
+            sessionHeaderStrip
+        }
+    }
+
+    /// The New chat chips live in the same strip the open chat uses for its
+    /// model/mode and Inspector chips: project, folder, model and mode, all
+    /// optional to touch.
+    private var draftHeaderStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Menu {
+                    Button("No project") { app.setDraftProject("", on: chat) }
+                    ForEach(app.projects) { definition in
+                        Button(definition.name) { app.setDraftProject(definition.name, on: chat) }
+                    }
+                } label: {
+                    Chip(
+                        title: chat.draftProject.isEmpty ? "No project" : chat.draftProject,
+                        icon: "square.stack"
+                    )
+                }
+
+                Menu {
+                    ForEach(app.recentFolders, id: \.self) { path in
+                        Button((path as NSString).abbreviatingWithTildeInPath) { chat.draftFolder = path }
+                    }
+                    if !app.recentFolders.isEmpty { Divider() }
+                    Button("Browse…") { showFolderPicker = true }
+                } label: {
+                    Chip(
+                        title: chat.draftFolder.isEmpty ? "Folder" : (chat.draftFolder as NSString).lastPathComponent,
+                        icon: "folder"
+                    )
+                }
+
+                ModelMenuButton(
+                    title: app.modelLabel(for: chat.draftModel),
+                    menu: app.modelMenu,
+                    selected: chat.draftModel,
+                    chip: true,
+                    onSelect: { chat.draftModel = $0 }
+                )
+
+                Menu {
+                    ForEach(Self.modeOptions) { option in
+                        Button {
+                            chat.draftMode = option.id
+                        } label: {
+                            Text((chat.draftMode == option.id ? "✓ " : "") + option.label)
+                        }
+                    }
+                } label: {
+                    Chip(
+                        title: Self.modeOptions.first { $0.id == chat.draftMode }?.label ?? "Ask",
+                        icon: "shield.lefthalf.filled"
+                    )
+                }
+            }
+            .padding(.horizontal, ProteusTheme.Space.gutter)
+            .padding(.vertical, 8)
+        }
+        .background(.ultraThinMaterial)
+        .background(theme.chrome)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 1)
+        }
+        .sheet(isPresented: $showFolderPicker) {
+            FolderPickerSheet(
+                title: "Chat folder",
+                initialPath: chat.draftFolder.isEmpty ? app.defaultFolder : chat.draftFolder
+            ) { path in
+                chat.draftFolder = path
+            }
+        }
+    }
+
+    private var sessionHeaderStrip: some View {
         HStack(spacing: 8) {
             Menu {
                 Section("Mode") {
@@ -396,7 +500,12 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     if chat.rows.isEmpty {
-                        EmptyChatHero(paletteKey: paletteKey)
+                        if chat.historyLoaded {
+                            EmptyChatHero(paletteKey: paletteKey)
+                        } else {
+                            // The shell is up at once; the history fills in.
+                            ChatSkeleton()
+                        }
                     }
 
                     if chat.rows.count > windowSize || chat.hasOlderHistory {
@@ -463,6 +572,10 @@ struct ChatView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
             }
+            // Start at the bottom without scrollTo: scrollTo on a LazyVStack
+            // has to measure every row between the top and the target, which
+            // is what froze the app when a long chat opened.
+            .defaultScrollAnchor(.bottom)
             .coordinateSpace(name: "chatScroll")
             .environment(\.appActions, app)
             .environment(\.chatPins, app.pins(for: chat.id))
@@ -490,11 +603,19 @@ struct ChatView: View {
                     anchorRowId = top.key
                 }
             }
+            .onChange(of: chat.historyLoaded) { _, loaded in
+                // The skeleton became the first page (about 40 rows): one
+                // cheap pin to the bottom for the case the anchor missed.
+                guard loaded, atBottom, chat.scrollAnchorId == nil || chat.scrollAtBottom else { return }
+                DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
             .onChange(of: chat.contentVersion) { _, _ in
                 if atBottom {
                     newSinceScrollUp = 0
                     lastSeenEntryCount = chat.entryCount
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    if chat.historyLoaded {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 } else {
                     // Frozen: no auto-scroll. Just count what arrived.
                     newSinceScrollUp = max(0, chat.entryCount - lastSeenEntryCount)
@@ -547,10 +668,8 @@ struct ChatView: View {
                         proxy.scrollTo(anchor, anchor: .top)
                     }
                 } else {
+                    // Bottom by `defaultScrollAnchor`; no scrollTo here.
                     atBottom = true
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
                 }
             }
             .onDisappear {
@@ -592,12 +711,12 @@ struct ChatView: View {
         }
     }
 
-    /// Pages in 120 older rows and keeps the current top row in place.
+    /// Pages in 40 older rows and keeps the current top row in place.
     private func loadEarlier(proxy: ScrollViewProxy) {
         guard chat.rows.count > windowSize || chat.hasOlderHistory else { return }
         let keep = chat.rows.suffix(windowSize).first?.id
         let previousWindow = windowSize
-        windowSize += 120
+        windowSize += AppModel.historyPageSize
         if chat.rows.count <= previousWindow {
             // Everything held is shown: fetch the next page from the hub.
             app.loadOlderHistory(chat)
@@ -669,6 +788,34 @@ private struct RowFrameKey: PreferenceKey {
     }
 }
 
+/// Placeholder bars while the first page of history is on its way.
+private struct ChatSkeleton: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            bar(width: 0.55, trailing: true)
+            bar(width: 0.9)
+            bar(width: 0.75)
+            bar(width: 0.35, trailing: true)
+            bar(width: 0.85)
+            bar(width: 0.6)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 24)
+        .accessibilityLabel("Loading messages")
+    }
+
+    private func bar(width: CGFloat, trailing: Bool = false) -> some View {
+        HStack(spacing: 0) {
+            if trailing { Spacer(minLength: 0) }
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 38)
+                .containerRelativeFrame(.horizontal) { length, _ in length * width }
+            if !trailing { Spacer(minLength: 0) }
+        }
+    }
+}
+
 private struct EmptyChatHero: View {
     let paletteKey: String
 
@@ -699,6 +846,30 @@ struct ChatRowView: View, Equatable {
 
     @State private var editing = false
     @State private var editText = ""
+    /// Long messages draw their first part only (Text layout and markdown
+    /// parsing of a 50 KB message are what stalled long chats); "Show more"
+    /// expands in place.
+    @State private var showAll = false
+    private static let previewLimit = 3000
+
+    private var isLong: Bool { row.text.utf8.count > Self.previewLimit * 2 }
+
+    private func shown(_ text: String) -> String {
+        guard isLong, !showAll else { return text }
+        return String(text.prefix(Self.previewLimit))
+    }
+
+    @ViewBuilder
+    private var showMoreButton: some View {
+        if isLong {
+            Button(showAll ? "Show less" : "Show more") {
+                showAll.toggle()
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(accent)
+        }
+    }
 
     /// Perf: with `.equatable()` a row re-renders only when its own data
     /// changes, so a streamed delta in the last row no longer re-evaluates the
@@ -715,7 +886,8 @@ struct ChatRowView: View, Equatable {
 
             case .assistant:
                 VStack(alignment: .leading, spacing: 3) {
-                    MarkdownText(text: row.text).equatable()
+                    MarkdownText(text: shown(row.text)).equatable()
+                    showMoreButton
                     // v10 §3/§13: the assistant's time once per turn, with a
                     // filled pin whenever this row is pinned.
                     let pinned = AppModel.pin(in: chatPins, for: row) != nil
@@ -800,8 +972,9 @@ struct ChatRowView: View, Equatable {
             HStack {
                 Spacer(minLength: 44)
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(row.text)
+                    Text(shown(row.text))
                         .textSelection(.enabled)
+                    showMoreButton
                     if row.images > 0 {
                         Label("\(row.images) image\(row.images == 1 ? "" : "s")", systemImage: "photo")
                             .font(.caption2)
@@ -1079,6 +1252,9 @@ struct MarkdownText: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // One selection region for the whole message, not one per block: a
+        // selectable Text each is costly in a long lazy list.
+        .textSelection(.enabled)
     }
 
     @ViewBuilder
@@ -1088,12 +1264,10 @@ struct MarkdownText: View, Equatable {
             Text(Self.styled(text))
                 .font(Self.headingFont(level))
                 .fontWeight(.semibold)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
         case let .paragraph(text):
             Text(Self.styled(text))
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case let .list(items):
             VStack(alignment: .leading, spacing: 4) {
@@ -1103,8 +1277,7 @@ struct MarkdownText: View, Equatable {
                             .foregroundStyle(.secondary)
                             .frame(minWidth: 14, alignment: .trailing)
                         Text(Self.styled(item.text))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, CGFloat(item.indent) * 16)
                 }
@@ -1120,8 +1293,7 @@ struct MarkdownText: View, Equatable {
                     .frame(width: 3)
                 Text(Self.styled(text))
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .rule:
@@ -1265,6 +1437,7 @@ struct ToolCardView: View {
     @Environment(\.chatPins) private var chatPins
     private var app: AppModel { appActions! }
     @State private var expanded = false
+    @State private var fullResult = false
     let row: ChatRow
     let chat: ChatSessionModel
 
@@ -1277,7 +1450,7 @@ struct ToolCardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let input = expandedInput {
                     sectionLabel("Input")
-                    Text(input)
+                    Text(Formatting.truncate(input, 4000))
                         .font(.system(.caption2, design: .monospaced))
                         .textSelection(.enabled)
                         .lineLimit(40)
@@ -1285,10 +1458,16 @@ struct ToolCardView: View {
                 }
                 if let result = row.toolResult, !result.isEmpty {
                     sectionLabel("Result")
-                    Text(Formatting.truncate(result, 4000))
+                    Text(Formatting.truncate(result, fullResult ? 60_000 : 4000))
                         .font(.system(.caption2, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if result.utf8.count > 4000 {
+                        Button(fullResult ? "Show less" : "Show more") { fullResult.toggle() }
+                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                    }
                 } else if row.toolStopped {
                     // v10 §16: cut off by Stop, not an error.
                     Text("stopped")

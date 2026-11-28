@@ -7,7 +7,16 @@ import ProteusKit
 /// does not rebuild the transcript (the hub only replays events after the
 /// last seq held by HubClient).
 final class ChatSessionModel: ObservableObject, Identifiable {
-    let id: String
+    /// A new-chat draft is created with a `draft-` id and takes the hub's real
+    /// id in place (`adopt`) when its first message creates the session, so the
+    /// view showing it is never swapped for another one.
+    @Published private(set) var id: String
+
+    /// The choices a draft carries until its first message is sent.
+    @Published var draftProject = ""
+    @Published var draftFolder = ""
+    @Published var draftModel = ""
+    @Published var draftMode = "default"
 
     let chat = ChatStore()
     let tasks = TaskStore()
@@ -32,8 +41,18 @@ final class ChatSessionModel: ObservableObject, Identifiable {
     var hasOlderHistory: Bool { chat.hasOlderHistory }
     var historyOffset: Int { chat.historyOffset }
 
+    static let draftPrefix = "draft-"
+
+    /// True until the first message has created the session on the hub.
+    var isDraft: Bool { id.hasPrefix(Self.draftPrefix) }
+
+    /// False until the first history frame (or the first live row) arrives, so
+    /// the chat can show its shell and a skeleton instead of an empty page.
+    @Published private(set) var historyLoaded = false
+
     init(id: String) {
         self.id = id
+        historyLoaded = id.hasPrefix(Self.draftPrefix)
         chat.reset(sessionId: id)
         chat.onChange = { [weak self] in self?.scheduleRefresh() }
         chat.onTask = { [weak self] task in self?.tasks.replace(task) }
@@ -42,7 +61,8 @@ final class ChatSessionModel: ObservableObject, Identifiable {
 
     var title: String {
         let title = session?.title ?? ""
-        return title.isEmpty ? "Chat" : title
+        if title.isEmpty { return isDraft ? "New chat" : "Chat" }
+        return title
     }
 
     var isRunning: Bool {
@@ -89,8 +109,18 @@ final class ChatSessionModel: ObservableObject, Identifiable {
         chat.apply(event)
     }
 
+    /// The draft's first message created session `newId` on the hub: this model
+    /// becomes that chat, keeping its identity in the view tree.
+    func adopt(id newId: String, firstText: String) {
+        id = newId
+        chat.reset(sessionId: newId)
+        if !firstText.isEmpty { chat.appendLocalUser(firstText) }
+        historyLoaded = true
+    }
+
     func applyHistory(_ frame: HistoryFrame) {
         loadingOlder = false
+        historyLoaded = true
         if frame.older {
             chat.prependHistory(frame.items, offset: frame.offset ?? 0)
             refreshRows()

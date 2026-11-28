@@ -173,6 +173,14 @@ public final class ChatStore {
     public init() {}
 
     public func reset(sessionId: String? = nil) {
+        resetState(sessionId: sessionId)
+        onChange?()
+    }
+
+    /// Clears everything without notifying: a history load replaces the rows
+    /// and publishes once (publishing the emptied store first made the view
+    /// lay out an empty transcript and then the full one, back to back).
+    private func resetState(sessionId: String?) {
         self.sessionId = sessionId
         rows = []
         visibleRows = []
@@ -184,6 +192,15 @@ public final class ChatStore {
         lastSeq = 0
         historyOffset = 0
         rowCounter = 0
+    }
+
+    /// A message the user just sent from a new-chat draft, shown at once while
+    /// the hub creates the session. The history frame that follows replaces it.
+    public func appendLocalUser(_ text: String) {
+        var row = ChatRow(id: nextId(), kind: .user, text: text)
+        row.timestamp = ""
+        appendEntry(row)
+        rebuildRows()
         onChange?()
     }
 
@@ -204,7 +221,7 @@ public final class ChatStore {
     /// Build from `history` items (which carry no seq), then continue from
     /// `lastSeq` with live events.
     public func applyHistory(_ items: [HistoryItem], lastSeq: Int, offset: Int? = nil) {
-        reset(sessionId: sessionId)
+        resetState(sessionId: sessionId)
         historyOffset = max(0, offset ?? 0)
         for item in items {
             let parent = item.data["parent"]?.stringValue ?? ""

@@ -25,6 +25,9 @@ private struct PendingNewChat {
     var text: String
     var project: String?
     var permissionMode: String?
+    /// The new-chat draft that sent it; becomes the chat in place when the hub
+    /// answers, so no other view replaces it.
+    var draft: ChatSessionModel?
 }
 
 /// App-wide state: the hub connection, the stores mirrored into @Published
@@ -172,7 +175,12 @@ final class AppModel: ObservableObject {
         }
         drafts.onChange = { [weak self] in
             guard let self else { return }
-            self.draftTexts = self.drafts.texts
+            // New-chat drafts keep their text only here (nothing to sync).
+            var texts = self.drafts.texts
+            for (id, text) in self.draftTexts where id.hasPrefix(ChatSessionModel.draftPrefix) {
+                texts[id] = text
+            }
+            self.draftTexts = texts
         }
         drafts.onFrame = { [weak self] frame in
             self?.hubClient?.send(frame)
@@ -658,6 +666,17 @@ final class AppModel: ObservableObject {
         )
         sessionStore.upsert(info)
         refreshSessions()
+        if let draft = pending.draft {
+            // In place: the view showing the draft keeps its identity and
+            // simply starts showing this chat.
+            newChatDrafts = newChatDrafts.filter { $0.value !== draft }
+            draft.adopt(id: id, firstText: trimmedText)
+            chats[id] = draft
+            draft.updateSession(info)
+            activeChat = draft
+            hubClient?.openSession(id)
+            return
+        }
         let chat = chatModel(for: id)
         chat.updateSession(info)
         activeChat = chat
@@ -720,7 +739,73 @@ final class AppModel: ObservableObject {
         }
     }
 
-    static let historyPageSize = 120
+    /// The first page is small so a chat opens at once; the rest pages in when
+    /// the user scrolls up.
+    static let historyPageSize = 40
+
+    // MARK: - New-chat drafts
+
+    /// Empty chats waiting for their first message, one per New chat screen.
+    private var newChatDrafts: [UUID: ChatSessionModel] = [:]
+
+    /// The draft behind a New chat destination (created once per target).
+    func draftChat(for target: NewChatTarget) -> ChatSessionModel {
+        if let existing = newChatDrafts[target.token] { return existing }
+        let chat = ChatSessionModel(id: ChatSessionModel.draftPrefix + target.token.uuidString)
+        chat.draftProject = target.project
+        chat.draftFolder = folderFor(project: target.project)
+        chat.draftModel = defaultModelForNewChat(project: target.project)
+        chat.draftMode = UserDefaults.standard.string(forKey: "proteus.newChatMode") ?? "default"
+        newChatDrafts[target.token] = chat
+        return chat
+    }
+
+    /// The project's own folder, else the last one used, else the first
+    /// project that has one.
+    func folderFor(project name: String) -> String {
+        if let definition = projects.first(where: { $0.name == name }),
+           let cwd = definition.cwd, !cwd.isEmpty {
+            return cwd
+        }
+        return defaultFolder
+    }
+
+    /// Drops an abandoned draft (the screen was popped without sending).
+    func discardNewChatDraft(_ chat: ChatSessionModel) {
+        guard chat.isDraft else { return }
+        newChatDrafts = newChatDrafts.filter { $0.value !== chat }
+        draftTexts[chat.id] = nil
+    }
+
+    /// The draft's chips changed project: folder and model follow it.
+    func setDraftProject(_ name: String, on chat: ChatSessionModel) {
+        chat.draftProject = name
+        chat.draftFolder = folderFor(project: name)
+        chat.draftModel = defaultModelForNewChat(project: name)
+    }
+
+    /// The first message of a draft: creates the session, and the draft turns
+    /// into that chat in place.
+    private func sendFirstMessage(of draft: ChatSessionModel, text: String, images: [ImageIn]) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !images.isEmpty else { return }
+        if !hasWorkstation {
+            errorText = "Add a workstation first. Chats run on your machine, not this phone."
+            return
+        }
+        UserDefaults.standard.set(draft.draftMode, forKey: "proteus.newChatMode")
+        if createChat(
+            cwd: draft.draftFolder,
+            model: draft.draftModel,
+            text: text,
+            project: draft.draftProject,
+            permissionMode: draft.draftMode,
+            images: images,
+            draft: draft
+        ) {
+            draftTexts[draft.id] = nil
+        }
+    }
 
     /// Asks the hub for the page of history just before what the chat holds.
     /// Does nothing on an older hub (it sent everything, so offset is 0).
@@ -731,10 +816,12 @@ final class AppModel: ObservableObject {
     }
 
     func openSession(_ id: String) {
+        guard !id.hasPrefix(ChatSessionModel.draftPrefix) else { return }
         hubClient?.openSession(id)
     }
 
     func closeSession(_ id: String) {
+        guard !id.hasPrefix(ChatSessionModel.draftPrefix) else { return }
         hubClient?.closeSession(id)
     }
 
@@ -782,7 +869,15 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func createChat(cwd: String, model: String, text: String, project: String, permissionMode: String? = nil) -> Bool {
+    func createChat(
+        cwd: String,
+        model: String,
+        text: String,
+        project: String,
+        permissionMode: String? = nil,
+        images: [ImageIn] = [],
+        draft: ChatSessionModel? = nil
+    ) -> Bool {
         guard hubClient?.state.isConnected == true else {
             errorText = "Not connected to a workstation."
             return false
@@ -804,7 +899,8 @@ final class AppModel: ObservableObject {
             model: model,
             text: text,
             project: projectName.isEmpty ? nil : projectName,
-            permissionMode: permissionMode
+            permissionMode: permissionMode,
+            draft: draft
         )
         pendingNew = pending
         do {
@@ -812,6 +908,7 @@ final class AppModel: ObservableObject {
                 cwd: trimmedCwd,
                 model: model,
                 text: text,
+                images: images.isEmpty ? nil : images,
                 permissionMode: permissionMode,
                 project: pending.project,
                 rid: rid
@@ -826,6 +923,10 @@ final class AppModel: ObservableObject {
     }
 
     func sendMessage(text: String, images: [ImageIn]) {
+        if let draft = activeChat, draft.isDraft {
+            sendFirstMessage(of: draft, text: text, images: images)
+            return
+        }
         guard let id = activeChat?.id else { return }
         guard !text.isEmpty || !images.isEmpty else { return }
         lastSend = (id, text, images)
@@ -844,11 +945,17 @@ final class AppModel: ObservableObject {
     // MARK: - Drafts (v9 §1)
 
     func setDraftText(_ text: String, for id: String) {
+        // A new-chat draft has no session on the hub to sync its text to.
+        if id.hasPrefix(ChatSessionModel.draftPrefix) {
+            draftTexts[id] = text.isEmpty ? nil : text
+            return
+        }
         drafts.setText(text, for: id)
     }
 
     /// Send the pending draft now (chat switch, app background).
     func flushDraft(for id: String) {
+        guard !id.hasPrefix(ChatSessionModel.draftPrefix) else { return }
         drafts.flush(id)
     }
 
@@ -859,6 +966,10 @@ final class AppModel: ObservableObject {
     /// The text was sent: drop the composer text without sending an empty
     /// draft (the hub clears it after a successful `session.send`).
     func discardDraft(for id: String) {
+        if id.hasPrefix(ChatSessionModel.draftPrefix) {
+            draftTexts[id] = nil
+            return
+        }
         drafts.discard(id)
     }
 

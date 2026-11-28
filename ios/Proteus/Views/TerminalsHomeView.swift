@@ -11,7 +11,6 @@ struct TerminalsHomeView: View {
     @Environment(\.proteusTheme) private var theme
 
     @State private var path = NavigationPath()
-    @State private var showNew = false
     @State private var didRouteDemo = false
 
     private var panelShape: RoundedRectangle {
@@ -63,7 +62,7 @@ struct TerminalsHomeView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showNew = true
+                        openNewTerminal()
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -77,14 +76,13 @@ struct TerminalsHomeView: View {
                 DispatchQueue.main.async { routeDemoIfNeeded() }
             }
         }
-        .sheet(isPresented: $showNew) {
-            NewTerminalSheet { cwd in
-                showNew = false
-                DispatchQueue.main.async {
-                    path.append(TerminalTarget.new(cwd: cwd))
-                }
-            }
-        }
+    }
+
+    /// No questions: the shell opens at once on the active workstation, in its
+    /// default folder (an empty folder means the home directory). A project's
+    /// own folder is chosen where the project is (its menu), never here.
+    private func openNewTerminal() {
+        path.append(TerminalTarget.new(cwd: ""))
     }
 
     // MARK: - Demo routing
@@ -111,7 +109,7 @@ struct TerminalsHomeView: View {
                 .font(.subheadline)
                 .foregroundStyle(theme.textSecondary)
             Button {
-                showNew = true
+                openNewTerminal()
             } label: {
                 Text("New terminal")
             }

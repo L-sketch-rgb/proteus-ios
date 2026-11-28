@@ -131,7 +131,7 @@ struct ChatsHomeView: View {
                 }
             }
             .navigationDestination(for: NewChatTarget.self) { target in
-                NewChatView(target: target)
+                ChatView(chat: app.draftChat(for: target))
             }
             .navigationDestination(for: String.self) { id in
                 ChatView(chat: app.chatModel(for: id))
