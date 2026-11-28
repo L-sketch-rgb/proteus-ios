@@ -53,6 +53,8 @@ struct WaveBackground: View {
     /// desktop default.
     var intensity: Double = 0.8
 
+    private static let stallDemo = CommandLine.arguments.contains("-ProteusDemoScreen=bigchat")
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -67,7 +69,9 @@ struct WaveBackground: View {
     }
 
     var body: some View {
-        let paused = !animated || reduceMotion || power.lowPower || frozen
+        // The CI stall check measures the transcript, not the simulator's
+        // software renderer drawing a full-screen shader: it holds still.
+        let paused = !animated || Self.stallDemo || reduceMotion || power.lowPower || frozen
             || !onScreen || scenePhase != .active
         GeometryReader { proxy in
             TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: paused)) { context in
