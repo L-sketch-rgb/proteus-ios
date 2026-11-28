@@ -3,13 +3,14 @@ import ProteusKit
 
 /// The three places a phone app needs (v18 §0):
 ///
-///     Chats · Terminals · Settings
+///     Chats · Terminals · Files · Settings
 ///
-/// Files joins them once the v17 place browser is rebuilt for the phone. Each
+/// Files is the fourth tab: the Files.app-style place browser (hub `fs.*`). Each
 /// tab owns its own `NavigationStack`, so switching tabs never loses a chat.
 enum ProteusTab: Hashable {
     case chats
     case terminals
+    case files
     case settings
 }
 
@@ -35,6 +36,10 @@ struct ProteusRootView: View {
             WaveTab { TerminalsHomeView() }
                 .tabItem { Label("Terminals", systemImage: "terminal") }
                 .tag(ProteusTab.terminals)
+
+            FilesPanelView(isTab: true)
+                .tabItem { Label("Files", systemImage: "folder") }
+                .tag(ProteusTab.files)
 
             WaveTab { SettingsView(showsDoneButton: false) }
                 .tabItem { Label("Settings", systemImage: "gearshape") }

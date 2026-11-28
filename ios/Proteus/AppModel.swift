@@ -109,6 +109,16 @@ final class AppModel: ObservableObject {
     @Published var fsErrorText: String?
     /// rid -> requested path, so an `err` can name the file or folder.
     private var fsPending: [String: String] = [:]
+    /// v13/v17: the hub's browsable roots, the latest `fs.find` answer and the
+    /// latest completed write (`fs.done`).
+    @Published private(set) var fsRoots: [FsRoot] = []
+    @Published private(set) var fsFound: FsFoundFrame?
+    @Published private(set) var fsDone: FsDoneFrame?
+    /// Image files "attached" from the file browser, per chat, waiting for the
+    /// composer to take them.
+    @Published var pendingComposerImages: [String: [ImageIn]] = [:]
+    /// fs.read rid -> chat id for an image being attached.
+    private var fsAttachPending: [String: String] = [:]
 
     /// v8 offline demo (`-ProteusDemo`, optionally `-ProteusDemoScreen=<name>`).
     let isDemo: Bool
@@ -233,6 +243,8 @@ final class AppModel: ObservableObject {
             version: 1
         )
         let client = HubClient(configuration: configuration)
+        // Newest-N history: the first load fetches only the latest rows.
+        client.historyLimit = AppModel.historyPageSize
         client.onStateChange = { [weak self] state in
             guard let self else { return }
             self.connection = state
@@ -550,6 +562,26 @@ final class AppModel: ObservableObject {
         case .fsFile(let frame):
             if let rid = frame.rid { fsPending.removeValue(forKey: rid) }
             fsFiles[frame.path] = frame
+            if let rid = frame.rid, let chatId = fsAttachPending.removeValue(forKey: rid) {
+                if let image = frame.image {
+                    let type = Self.imageMediaType(path: frame.path)
+                    pendingComposerImages[chatId, default: []].append(ImageIn(mediaType: type, data: image))
+                } else {
+                    errorText = "That file is not an image the hub can attach."
+                }
+            }
+
+        case .fsRoots(let frame):
+            if let rid = frame.rid { fsPending.removeValue(forKey: rid) }
+            fsRoots = frame.roots
+
+        case .fsFound(let frame):
+            if let rid = frame.rid { fsPending.removeValue(forKey: rid) }
+            fsFound = frame
+
+        case .fsDone(let frame):
+            if let rid = frame.rid { fsPending.removeValue(forKey: rid) }
+            fsDone = frame
 
         case .login(let frame):
             loginUpdate = LoginUpdate(
@@ -570,6 +602,11 @@ final class AppModel: ObservableObject {
             let rejectedNewChat = newChatRid != nil && (frame.rid == nil || frame.rid == newChatRid)
             if let pending = pendingNew, frame.rid == pending.rid {
                 pendingNew = nil
+            }
+            if let rid = frame.rid, fsAttachPending.removeValue(forKey: rid) != nil {
+                errorText = frame.message ?? "Could not read that file."
+                fsPending.removeValue(forKey: rid)
+                return
             }
             if let rid = frame.rid, let path = fsPending.removeValue(forKey: rid) {
                 let message = frame.message ?? "Request failed (\(frame.code))."
@@ -681,6 +718,16 @@ final class AppModel: ObservableObject {
         if activeChat === chat {
             activeChat = nil
         }
+    }
+
+    static let historyPageSize = 120
+
+    /// Asks the hub for the page of history just before what the chat holds.
+    /// Does nothing on an older hub (it sent everything, so offset is 0).
+    func loadOlderHistory(_ chat: ChatSessionModel) {
+        guard chat.hasOlderHistory, !chat.loadingOlder else { return }
+        chat.loadingOlder = true
+        hubClient?.openOlder(chat.id, before: chat.historyOffset, limit: Self.historyPageSize)
     }
 
     func openSession(_ id: String) {
@@ -856,6 +903,69 @@ final class AppModel: ObservableObject {
         hubClient?.send(.fsRead(id: chatId, path: path, rid: rid))
     }
 
+    func fsList(scope: FsScope, path: String) {
+        let rid = UUID().uuidString
+        fsPending[rid] = path
+        fsErrorText = nil
+        hubClient?.send(scope.list(path: path, rid: rid))
+    }
+
+    func fsRead(scope: FsScope, path: String) {
+        let rid = UUID().uuidString
+        fsPending[rid] = path
+        fsErrorText = nil
+        hubClient?.send(scope.read(path: path, rid: rid))
+    }
+
+    func fsLoadRoots() {
+        hubClient?.send(.fsRoots(rid: UUID().uuidString))
+    }
+
+    /// Name search under `root`; `path` limits it to one folder.
+    func fsFind(root: String, query: String, path: String?) {
+        let rid = UUID().uuidString
+        fsPending[rid] = ""
+        fsErrorText = nil
+        hubClient?.send(.fsFind(root: root, query: query, limit: 200, path: path, rid: rid))
+    }
+
+    func fsMkdir(root: String, path: String) {
+        let rid = UUID().uuidString
+        fsPending[rid] = path
+        fsErrorText = nil
+        hubClient?.send(.fsMkdir(root: root, path: path, rid: rid))
+    }
+
+    func fsRename(root: String, path: String, name: String) {
+        let rid = UUID().uuidString
+        fsPending[rid] = path
+        fsErrorText = nil
+        hubClient?.send(.fsRename(root: root, path: path, name: name, rid: rid))
+    }
+
+    func fsDelete(root: String, path: String) {
+        let rid = UUID().uuidString
+        fsPending[rid] = path
+        fsErrorText = nil
+        hubClient?.send(.fsDelete(root: root, path: path, rid: rid))
+    }
+
+    /// Read an image file and queue it for `chatId`'s composer.
+    func attachImageFile(scope: FsScope, path: String, chatId: String) {
+        let rid = UUID().uuidString
+        fsAttachPending[rid] = chatId
+        hubClient?.send(scope.read(path: path, rid: rid))
+    }
+
+    private static func imageMediaType(path: String) -> String {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        default: return "image/jpeg"
+        }
+    }
+
     func fsListing(for path: String) -> FsListingFrame? {
         fsListings[path]
     }
@@ -889,8 +999,14 @@ final class AppModel: ObservableObject {
     /// The pin matching a row, by seq when live and by kind + excerpt
     /// otherwise. Nil when the row is not pinned.
     func pin(for row: ChatRow, chatId: String) -> Pin? {
+        Self.pin(in: pins(for: chatId), for: row)
+    }
+
+    /// Pure lookup, so rows can resolve their pin from a value passed down
+    /// through the environment instead of observing the whole AppModel.
+    static func pin(in pins: [Pin], for row: ChatRow) -> Pin? {
         guard let kind = row.pinKind else { return nil }
-        let candidates = pins(for: chatId).filter { $0.kind == kind }
+        let candidates = pins.filter { $0.kind == kind }
         // Trim the hub's 160-character ellipsis so a history row (seq 0) and
         // a long live pin still match after reopening the chat.
         func trimmed(_ value: String) -> String {

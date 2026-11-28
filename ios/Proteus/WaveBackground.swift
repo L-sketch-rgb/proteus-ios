@@ -1,8 +1,51 @@
 import SwiftUI
 import ProteusKit
 
+/// Why the wave is (or is not) allowed to move right now.
+///
+/// The shader is GPU work for the full screen on every frame it ticks, so the
+/// wave only animates when all of these hold: the screen is visible, the app
+/// is active, Reduce Motion and Low Power Mode are off, the setting is on, and
+/// nothing above it (a streaming transcript) asked it to hold still.
+private final class PowerWatcher: ObservableObject {
+    @Published private(set) var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private var token: NSObjectProtocol?
+
+    init() {
+        token = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+    }
+
+    deinit {
+        if let token { NotificationCenter.default.removeObserver(token) }
+    }
+}
+
+/// A screen sets this to freeze the wave on its current frame (the chat does
+/// while a reply is streaming, so the GPU and main thread go to the text).
+private struct WaveFrozenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var waveFrozen: Bool {
+        get { self[WaveFrozenKey.self] }
+        set { self[WaveFrozenKey.self] = newValue }
+    }
+}
+
 /// Animated dithered wave. The Metal color effect is the 1:1 port of
 /// export/wave-dither/wave-dither.glsl; the flat bg colour sits underneath.
+///
+/// Performance rules (v19 fixes): one instance per screen, drawn *behind* the
+/// scroll view and never inside a row; the drift is slow so it ticks at 12 fps
+/// rather than 30; it stops entirely when its screen is covered by a pushed
+/// screen or another tab (onDisappear), when the app is inactive, under Low
+/// Power Mode and Reduce Motion, and while `waveFrozen` is set. A stopped wave
+/// still draws its current frame once.
 struct WaveBackground: View {
     let palette: Palette
     var animated: Bool = true
@@ -13,17 +56,21 @@ struct WaveBackground: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.waveFrozen) private var frozen
+    @StateObject private var power = PowerWatcher()
 
     @State private var start = Date()
+    @State private var onScreen = true
 
     private var mode: PaletteMode {
         palette.mode(dark: colorScheme == .dark)
     }
 
     var body: some View {
+        let paused = !animated || reduceMotion || power.lowPower || frozen
+            || !onScreen || scenePhase != .active
         GeometryReader { proxy in
-            let paused = !animated || reduceMotion || scenePhase != .active
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { context in
+            TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: paused)) { context in
                 let time = Float(max(0, context.date.timeIntervalSince(start)))
                 let waves = mode.waves
                 Rectangle()
@@ -42,6 +89,9 @@ struct WaveBackground: View {
         .background(mode.background.color)
         .ignoresSafeArea()
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onAppear { onScreen = true }
+        .onDisappear { onScreen = false }
     }
 }
 

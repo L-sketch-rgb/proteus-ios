@@ -51,9 +51,19 @@ public extension ClientFrame {
         ClientFrame("sessions.list", rid: rid)
     }
 
-    static func sessionOpen(id: String, since: Int? = nil, rid: String? = nil) -> ClientFrame {
+    /// `limit` asks for only the newest N history items; `before` (an earlier
+    /// reply's `offset`) pages the N before it. Older hubs ignore both.
+    static func sessionOpen(
+        id: String,
+        since: Int? = nil,
+        limit: Int? = nil,
+        before: Int? = nil,
+        rid: String? = nil
+    ) -> ClientFrame {
         var fields: [String: JSONValue] = ["id": .string(id)]
         if let since { fields["since"] = .int(since) }
+        if let limit { fields["limit"] = .int(limit) }
+        if let before { fields["before"] = .int(before) }
         return ClientFrame("session.open", rid: rid, fields)
     }
 
@@ -326,6 +336,45 @@ public extension ClientFrame {
         return ClientFrame("fs.read", rid: rid, fields)
     }
 
+    /// v13 §2.1: list one folder under a workstation root (instead of a chat).
+    static func fsList(root: String, path: String, rid: String? = nil) -> ClientFrame {
+        ClientFrame("fs.list", rid: rid, ["root": .string(root), "path": .string(path)])
+    }
+
+    static func fsRead(root: String, path: String, maxBytes: Int? = nil, rid: String? = nil) -> ClientFrame {
+        var fields: [String: JSONValue] = ["root": .string(root), "path": .string(path)]
+        if let maxBytes { fields["maxBytes"] = .int(maxBytes) }
+        return ClientFrame("fs.read", rid: rid, fields)
+    }
+
+    /// v13 §2.1: the hub's browsable roots (places, projects, devices).
+    static func fsRoots(rid: String? = nil) -> ClientFrame {
+        ClientFrame("fs.roots", rid: rid)
+    }
+
+    /// v13/v17: name search under a root; `path` narrows it to one folder.
+    static func fsFind(root: String, query: String, limit: Int? = nil, path: String? = nil, rid: String? = nil) -> ClientFrame {
+        var fields: [String: JSONValue] = ["root": .string(root), "query": .string(query)]
+        if let limit { fields["limit"] = .int(limit) }
+        if let path { fields["path"] = .string(path) }
+        return ClientFrame("fs.find", rid: rid, fields)
+    }
+
+    /// v17 §4: create one folder.
+    static func fsMkdir(root: String, path: String, rid: String? = nil) -> ClientFrame {
+        ClientFrame("fs.mkdir", rid: rid, ["root": .string(root), "path": .string(path)])
+    }
+
+    /// v17 §4: rename within the same folder; `name` is a bare base name.
+    static func fsRename(root: String, path: String, name: String, rid: String? = nil) -> ClientFrame {
+        ClientFrame("fs.rename", rid: rid, ["root": .string(root), "path": .string(path), "name": .string(name)])
+    }
+
+    /// v17 §4: delete a file or a folder recursively.
+    static func fsDelete(root: String, path: String, rid: String? = nil) -> ClientFrame {
+        ClientFrame("fs.delete", rid: rid, ["root": .string(root), "path": .string(path)])
+    }
+
     static func termOpen(cwd: String?, cols: Int, rows: Int, plain: Bool = false, rid: String? = nil) -> ClientFrame {
         var fields: [String: JSONValue] = [
             "cols": .int(cols),
@@ -437,15 +486,24 @@ public struct HistoryFrame: Codable, Sendable {
     public var id: String
     public var items: [HistoryItem]
     public var lastSeq: Int
+    /// Paged replies only: index of `items[0]` among the chat items. Nil from
+    /// an older hub, which always sends the full history.
+    public var offset: Int?
+    public var total: Int?
+    /// A reply to `before`: older rows to prepend, not a fresh history.
+    public var older: Bool
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         items = try c.decodeIfPresent([HistoryItem].self, forKey: .items) ?? []
         lastSeq = try c.decodeIfPresent(Int.self, forKey: .lastSeq) ?? 0
+        offset = try c.decodeIfPresent(Int.self, forKey: .offset)
+        total = try c.decodeIfPresent(Int.self, forKey: .total)
+        older = try c.decodeIfPresent(Bool.self, forKey: .older) ?? false
     }
 
-    private enum CodingKeys: String, CodingKey { case id, items, lastSeq }
+    private enum CodingKeys: String, CodingKey { case id, items, lastSeq, offset, total, older }
 }
 
 public struct EventFrame: Decodable, Sendable {
@@ -614,8 +672,17 @@ public struct FsEntry: Codable, Hashable, Sendable {
     public var mtime: String
     /// Hidden names still appear, flagged (docs/design v10 §7).
     public var hidden: Bool
+    /// Absolute real path: present on `fs.find` results.
+    public var path: String?
+    /// v17: entry count of a folder (cap 10 000), when readable.
+    public var count: Int?
 
-    public init(name: String, dir: Bool, size: Int = 0, mtime: String = "", hidden: Bool = false) {
+    public init(
+        name: String, dir: Bool, size: Int = 0, mtime: String = "", hidden: Bool = false,
+        path: String? = nil, count: Int? = nil
+    ) {
+        self.path = path
+        self.count = count
         self.name = name
         self.dir = dir
         self.size = size
@@ -623,7 +690,7 @@ public struct FsEntry: Codable, Hashable, Sendable {
         self.hidden = hidden
     }
 
-    private enum CodingKeys: String, CodingKey { case name, dir, size, mtime, hidden }
+    private enum CodingKeys: String, CodingKey { case name, dir, size, mtime, hidden, path, count }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -632,6 +699,163 @@ public struct FsEntry: Codable, Hashable, Sendable {
         size = try c.decodeIfPresent(Int.self, forKey: .size) ?? 0
         mtime = try c.decodeIfPresent(String.self, forKey: .mtime) ?? ""
         hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        path = try c.decodeIfPresent(String.self, forKey: .path)
+        count = try c.decodeIfPresent(Int.self, forKey: .count)
+    }
+}
+
+/// What an `fs.*` request is scoped to: one chat's tree (v10 §7) or one
+/// workstation root (v13 §2.1). Writes need a root.
+public enum FsScope: Hashable, Sendable {
+    case chat(String)
+    case root(String)
+
+    public func list(path: String, rid: String? = nil) -> ClientFrame {
+        switch self {
+        case .chat(let id): return .fsList(id: id, path: path, rid: rid)
+        case .root(let id): return .fsList(root: id, path: path, rid: rid)
+        }
+    }
+
+    public func read(path: String, rid: String? = nil) -> ClientFrame {
+        switch self {
+        case .chat(let id): return .fsRead(id: id, path: path, rid: rid)
+        case .root(let id): return .fsRead(root: id, path: path, rid: rid)
+        }
+    }
+
+    public var rootId: String? {
+        if case .root(let id) = self { return id }
+        return nil
+    }
+}
+
+/// One browsable root (v13 §2.1 / v17 places).
+public struct FsRoot: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var label: String
+    public var path: String
+    /// `places`, `projects` or `devices`.
+    public var group: String
+    public var icon: String
+    public var free: Int?
+    public var total: Int?
+
+    public init(id: String, label: String, path: String, group: String = "places",
+                icon: String = "folder", free: Int? = nil, total: Int? = nil) {
+        self.id = id
+        self.label = label
+        self.path = path
+        self.group = group
+        self.icon = icon
+        self.free = free
+        self.total = total
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, label, path, group, icon, free, total }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? id
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        group = try c.decodeIfPresent(String.self, forKey: .group) ?? "places"
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? "folder"
+        free = try c.decodeIfPresent(Int.self, forKey: .free)
+        total = try c.decodeIfPresent(Int.self, forKey: .total)
+    }
+}
+
+/// `fs.roots` reply and push.
+public struct FsRootsFrame: Codable, Sendable {
+    public var rid: String?
+    public var roots: [FsRoot]
+
+    public init(rid: String? = nil, roots: [FsRoot]) {
+        self.rid = rid
+        self.roots = roots
+    }
+
+    private enum CodingKeys: String, CodingKey { case rid, roots }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rid = try c.decodeIfPresent(String.self, forKey: .rid)
+        roots = try c.decodeIfPresent([FsRoot].self, forKey: .roots) ?? []
+    }
+}
+
+/// `fs.found`: name-search results; every entry carries its absolute `path`.
+public struct FsFoundFrame: Codable, Sendable {
+    public var rid: String?
+    public var root: String
+    public var entries: [FsEntry]
+    public var truncated: Bool
+
+    public init(rid: String? = nil, root: String, entries: [FsEntry], truncated: Bool = false) {
+        self.rid = rid
+        self.root = root
+        self.entries = entries
+        self.truncated = truncated
+    }
+
+    private enum CodingKeys: String, CodingKey { case rid, root, entries, truncated }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rid = try c.decodeIfPresent(String.self, forKey: .rid)
+        root = try c.decodeIfPresent(String.self, forKey: .root) ?? ""
+        entries = try c.decodeIfPresent([FsEntry].self, forKey: .entries) ?? []
+        truncated = try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+    }
+}
+
+/// `fs.done`: the answer to mkdir, rename and delete. `path` is the resolved
+/// real path after the operation (the new path for a rename).
+public struct FsDoneFrame: Codable, Sendable, Equatable {
+    public var rid: String?
+    public var op: String
+    public var root: String
+    public var path: String
+
+    public init(rid: String? = nil, op: String, root: String, path: String) {
+        self.rid = rid
+        self.op = op
+        self.root = root
+        self.path = path
+    }
+}
+
+public enum FsPaths {
+    /// The parent folder of an absolute path ("/" for a top-level entry).
+    public static func parent(of path: String) -> String {
+        var p = path
+        while p.count > 1, p.hasSuffix("/") { p.removeLast() }
+        guard let slash = p.lastIndex(of: "/") else { return "" }
+        let head = String(p[p.startIndex..<slash])
+        return head.isEmpty ? "/" : head
+    }
+
+    public static func join(_ directory: String, _ name: String) -> String {
+        if directory.isEmpty { return name }
+        return directory.hasSuffix("/") ? directory + name : directory + "/" + name
+    }
+
+    /// Root groups in display order: places, projects, devices.
+    public static func grouped(_ roots: [FsRoot]) -> [(group: String, roots: [FsRoot])] {
+        var result: [(group: String, roots: [FsRoot])] = []
+        for group in ["places", "projects", "devices"] {
+            let items = roots.filter { $0.group == group }
+            if !items.isEmpty { result.append((group: group, roots: items)) }
+        }
+        return result
+    }
+
+    /// The root (longest matching path) that contains `path`.
+    public static func root(containing path: String, in roots: [FsRoot]) -> FsRoot? {
+        roots
+            .filter { $0.path == path || path.hasPrefix($0.path.hasSuffix("/") ? $0.path : $0.path + "/") }
+            .max { $0.path.count < $1.path.count }
     }
 }
 
@@ -777,6 +1001,9 @@ public enum ServerMessage: Sendable {
     case dirs(DirsFrame)
     case fsListing(FsListingFrame)
     case fsFile(FsFileFrame)
+    case fsRoots(FsRootsFrame)
+    case fsFound(FsFoundFrame)
+    case fsDone(FsDoneFrame)
     case login(LoginFrame)
     case ok(OkFrame)
     case err(ErrFrame)
@@ -810,6 +1037,9 @@ public enum ServerMessage: Sendable {
         case .dirs: return "dirs"
         case .fsListing: return "fs.listing"
         case .fsFile: return "fs.file"
+        case .fsRoots: return "fs.roots"
+        case .fsFound: return "fs.found"
+        case .fsDone: return "fs.done"
         case .login: return "login"
         case .ok: return "ok"
         case .err: return "err"
@@ -852,6 +1082,9 @@ public enum ServerMessage: Sendable {
         case "dirs": return .dirs(try decoder.decode(DirsFrame.self, from: data))
         case "fs.listing": return .fsListing(try decoder.decode(FsListingFrame.self, from: data))
         case "fs.file": return .fsFile(try decoder.decode(FsFileFrame.self, from: data))
+        case "fs.roots": return .fsRoots(try decoder.decode(FsRootsFrame.self, from: data))
+        case "fs.found": return .fsFound(try decoder.decode(FsFoundFrame.self, from: data))
+        case "fs.done": return .fsDone(try decoder.decode(FsDoneFrame.self, from: data))
         case "login": return .login(try decoder.decode(LoginFrame.self, from: data))
         case "ok": return .ok(try decoder.decode(OkFrame.self, from: data))
         case "err": return .err(try decoder.decode(ErrFrame.self, from: data))
