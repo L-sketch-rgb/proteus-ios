@@ -14,6 +14,14 @@ final class LargeChatPerformanceTests: XCTestCase {
     }
 
     /// The target is a phone, slower than the CI Mac: 100 ms per stage.
+    private static func historyItem(_ raw: [String: Any]) -> HistoryItem {
+        HistoryItem(
+            ts: raw["ts"] as? String ?? "",
+            kind: raw["kind"] as? String ?? "",
+            data: JSONValue(any: raw["data"] ?? NSNull())
+        )
+    }
+
     private let budget = 100.0
 
     /// A paged hub: the newest 16 items, tool output capped the way the hub caps it.
@@ -48,7 +56,7 @@ final class LargeChatPerformanceTests: XCTestCase {
         // main-thread work, so each must stay small.
         var offset = 3984
         for chunk in 0..<5 {
-            let older = Array(all[(offset - 20)..<offset])
+            let older = all[(offset - 20)..<offset].map(Self.historyItem)
             offset -= 20
             let (_, prepend) = time("backfill.chunk\(chunk)(20 rows)") {
                 store.prependHistory(older, offset: offset)
